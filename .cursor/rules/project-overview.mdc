@@ -1,0 +1,317 @@
+# KeyDesk 项目总体规范
+
+## 项目概述
+
+### 项目简介
+KeyDesk是一个灵活的Go包，提供激活码生成和管理功能，可以被其他Go应用集成使用。支持自定义字段、多种存储后端和高性能的激活码操作。
+
+### 核心特性
+- 🔑 灵活的激活码生成和管理
+- 📝 自定义字段和模板系统
+- 🔄 支持多种存储后端（MongoDB、Redis、内存等）
+- 🗄️ 高性能的缓存和批量操作
+- 🔒 完善的安全和防暴力破解机制
+- 📊 可扩展的监控和统计接口
+- 🚀 易于集成的Go包设计
+
+### 技术栈
+- **语言**: Go 1.21+
+- **存储**: MongoDB + Redis
+- **缓存**: Redis + 内存缓存
+- **安全**: 加密哈希 + 限流机制
+- **测试**: Go testing + testify
+- **文档**: Go doc + Markdown
+
+## 项目架构
+
+### 包结构设计
+```
+keydesk/
+├── pkg/                       # 核心包
+│   ├── generator/             # 激活码生成器
+│   ├── validator/             # 激活码验证器
+│   ├── template/              # 模板管理
+│   ├── storage/               # 存储接口
+│   ├── security/              # 安全相关
+│   ├── cache/                 # 缓存接口
+│   └── types/                 # 类型定义
+├── storage/                   # 存储实现
+│   ├── mongodb/               # MongoDB实现
+│   ├── redis/                 # Redis实现
+│   └── memory/                # 内存存储实现
+├── examples/                  # 使用示例
+├── cmd/                       # 命令行工具
+├── go.mod
+├── go.sum
+└── README.md
+```
+
+### 核心组件架构
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    Application Layer                        │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐        │
+│  │ HTTP Server │  │ CLI Tool    │  │ Your App    │        │
+│  └─────────────┘  └─────────────┘  └─────────────┘        │
+└─────────────────────┬───────────────────────────────────────┘
+                      │
+┌─────────────────────▼───────────────────────────────────────┐
+│                     Core Package                            │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐        │
+│  │ Generator   │  │ Validator   │  │ Template    │        │
+│  │ Package     │  │ Package     │  │ Package     │        │
+│  └─────────────┘  └─────────────┘  └─────────────┘        │
+└─────────────────────┬───────────────────────────────────────┘
+                      │
+┌─────────────────────▼───────────────────────────────────────┐
+│                   Storage Layer                             │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐        │
+│  │ Storage     │  │ Cache       │  │ Security    │        │
+│  │ Interface   │  │ Interface   │  │ Manager     │        │
+│  └─────────────┘  └─────────────┘  └─────────────┘        │
+└─────────────────────┬───────────────────────────────────────┘
+                      │
+          ┌───────────┼───────────┐
+          │           │           │
+┌─────────▼─────────┐ │ ┌─────────▼─────────┐
+│   MongoDB         │ │ │   Redis           │
+│   Storage         │ │ │   Cache           │
+│   Implementation  │ │ │   Implementation  │
+└───────────────────┘ │ └───────────────────┘
+                      │
+          ┌───────────┴───────────┐
+          │                       │
+┌─────────▼─────────┐ ┌─────────▼─────────┐
+│   Memory          │ │   Custom          │
+│   Storage         │ │   Storage         │
+│   Implementation  │ │   Implementation  │
+└───────────────────┘ └───────────────────┘
+```
+
+## 设计原则
+
+### 1. 包设计原则
+- **单一职责**: 每个包只负责一个特定功能
+- **接口分离**: 通过接口定义清晰的契约
+- **依赖倒置**: 高层模块不依赖低层模块
+- **开闭原则**: 对扩展开放，对修改关闭
+
+### 2. Go最佳实践
+- 遵循Go官方代码规范
+- 使用Go modules管理依赖
+- 提供完整的Go doc文档
+- 编写全面的单元测试
+
+### 3. 性能优化
+- 使用连接池管理数据库连接
+- 实现多级缓存策略
+- 支持批量操作
+- 异步处理非关键操作
+
+## 核心接口设计
+
+### 存储接口
+```go
+// Storage 存储接口
+type Storage interface {
+    // 激活码操作
+    SaveActivationCode(ctx context.Context, code *ActivationCode) error
+    GetActivationCode(ctx context.Context, id string) (*ActivationCode, error)
+    GetActivationCodeByCode(ctx context.Context, code string) (*ActivationCode, error)
+    UpdateActivationCode(ctx context.Context, id string, updates map[string]interface{}) error
+    DeleteActivationCode(ctx context.Context, id string) error
+    ListActivationCodes(ctx context.Context, filter *CodeFilter) ([]*ActivationCode, error)
+    
+    // 模板操作
+    SaveTemplate(ctx context.Context, template *Template) error
+    GetTemplate(ctx context.Context, id string) (*Template, error)
+    UpdateTemplate(ctx context.Context, id string, updates map[string]interface{}) error
+    DeleteTemplate(ctx context.Context, id string) error
+    ListTemplates(ctx context.Context, filter *TemplateFilter) ([]*Template, error)
+}
+```
+
+### 缓存接口
+```go
+// Cache 缓存接口
+type Cache interface {
+    Get(ctx context.Context, key string) (interface{}, error)
+    Set(ctx context.Context, key string, value interface{}, ttl time.Duration) error
+    Delete(ctx context.Context, key string) error
+    Exists(ctx context.Context, key string) (bool, error)
+}
+```
+
+### 生成器接口
+```go
+// Generator 激活码生成器
+type Generator interface {
+    Generate(ctx context.Context, template *Template, options *GenerateOptions) (*ActivationCode, error)
+    GenerateBatch(ctx context.Context, template *Template, quantity int, options *GenerateOptions) ([]*ActivationCode, error)
+}
+```
+
+### 验证器接口
+```go
+// Validator 激活码验证器
+type Validator interface {
+    Validate(ctx context.Context, code string, context map[string]interface{}) (*ValidationResult, error)
+    Use(ctx context.Context, code string, userID string, metadata map[string]interface{}) error
+}
+```
+
+## 使用方式
+
+### 1. 作为Go包使用
+```go
+import (
+    "github.com/your-org/keydesk/pkg/generator"
+    "github.com/your-org/keydesk/pkg/validator"
+    "github.com/your-org/keydesk/pkg/types"
+    "github.com/your-org/keydesk/storage/mongodb"
+    "github.com/your-org/keydesk/storage/redis"
+)
+
+func main() {
+    // 初始化存储
+    storage := mongodb.NewStorage("mongodb://localhost:27017", "keydesk")
+    cache := redis.NewCache("localhost:6379", "", 0)
+    
+    // 创建生成器和验证器
+    gen := generator.New(storage, cache, nil)
+    val := validator.New(storage, cache, nil)
+    
+    // 使用功能
+    code, err := gen.Generate(ctx, template, options)
+    result, err := val.Validate(ctx, code.Code, nil)
+}
+```
+
+### 2. 命令行工具
+```bash
+# 安装命令行工具
+go install github.com/your-org/keydesk/cmd/keydesk@latest
+
+# 生成激活码
+keydesk generate --template template-1 --quantity 10
+
+# 验证激活码
+keydesk validate --code ABC12345
+
+# 使用激活码
+keydesk use --code ABC12345 --user user-123
+```
+
+### 3. HTTP服务集成
+```go
+// 在你的HTTP服务中集成
+func setupKeyDeskRoutes(r *gin.Engine) {
+    gen := keydesk.NewGenerator(storage, cache, nil)
+    val := keydesk.NewValidator(storage, cache, nil)
+    
+    api := r.Group("/api/v1")
+    {
+        api.POST("/activation-codes", generateCodeHandler(gen))
+        api.POST("/activation-codes/validate", validateCodeHandler(val))
+        api.POST("/activation-codes/use", useCodeHandler(val))
+    }
+}
+```
+
+## 开发规范
+
+### 代码风格
+- 遵循Go官方代码规范
+- 使用gofmt格式化代码
+- 使用golint检查代码质量
+- 使用go vet检查潜在问题
+
+### 测试要求
+- 单元测试覆盖率 > 80%
+- 集成测试覆盖核心功能
+- 性能测试验证关键路径
+- 基准测试监控性能变化
+
+### 文档要求
+- 每个导出的函数都有Go doc注释
+- README.md包含完整的使用说明
+- examples/目录提供使用示例
+- API文档使用Go doc生成
+
+## 发布和版本管理
+
+### 版本策略
+- 使用语义化版本控制
+- 主版本号：不兼容的API修改
+- 次版本号：向下兼容的功能性新增
+- 修订号：向下兼容的问题修正
+
+### 发布流程
+1. 代码审查和测试
+2. 更新版本号和CHANGELOG
+3. 创建Git标签
+4. 发布到Go modules
+5. 更新文档
+
+## 项目里程碑
+
+### Phase 1: 核心功能
+- [x] 项目架构设计
+- [x] 核心接口定义
+- [ ] 生成器实现
+- [ ] 验证器实现
+- [ ] 基础存储实现
+
+### Phase 2: 存储后端
+- [ ] MongoDB存储实现
+- [ ] Redis缓存实现
+- [ ] 内存存储实现
+- [ ] 存储接口测试
+
+### Phase 3: 安全功能
+- [ ] 加密和哈希实现
+- [ ] 防暴力破解机制
+- [ ] 限流和监控
+- [ ] 安全测试
+
+### Phase 4: 工具和文档
+- [ ] 命令行工具
+- [ ] HTTP服务示例
+- [ ] 完整文档
+- [ ] 性能优化
+
+## 贡献指南
+
+### 开发环境
+- Go 1.21+
+- MongoDB 5.0+
+- Redis 6.0+
+- Git
+
+### 开发工具
+- VS Code / GoLand
+- Go modules
+- Docker & Docker Compose
+- Make
+
+### 提交规范
+- 遵循Conventional Commits
+- 编写清晰的提交信息
+- 包含相关的测试
+- 更新相关文档
+
+## 联系方式
+
+### 项目维护者
+- 项目负责人: [Your Name]
+- 邮箱: [your.email@example.com]
+- GitHub: [@your-username]
+
+### 技术支持
+- 文档: [docs.example.com]
+- 问题反馈: [GitHub Issues]
+- 讨论区: [GitHub Discussions]
+
+---
+
+*最后更新: 2024年1月*

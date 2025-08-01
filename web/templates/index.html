@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{.title}}</title>
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+</head>
+<body class="bg-gray-100 min-h-screen">
+    <!-- 导航栏 -->
+    <nav class="bg-white shadow-lg">
+        <div class="max-w-7xl mx-auto px-4">
+            <div class="flex justify-between h-16">
+                <div class="flex items-center">
+                    <i class="fas fa-key text-blue-600 text-2xl mr-2"></i>
+                    <span class="text-xl font-bold text-gray-800">KeyDesk</span>
+                </div>
+                <div class="flex items-center space-x-4">
+                    <button id="generateBtn" class="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700">
+                        <i class="fas fa-plus mr-2"></i>生成激活码
+                    </button>
+                    <button id="adminBtn" class="bg-gray-600 text-white px-4 py-2 rounded-lg hover:bg-gray-700">
+                        <i class="fas fa-cog mr-2"></i>管理
+                    </button>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <!-- 主要内容 -->
+    <div class="max-w-7xl mx-auto px-4 py-8">
+        <!-- 激活码验证区域 -->
+        <div class="bg-white rounded-lg shadow-md p-6 mb-8">
+            <h2 class="text-2xl font-bold text-gray-800 mb-4">
+                <i class="fas fa-check-circle text-green-600 mr-2"></i>激活码验证
+            </h2>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-2">激活码</label>
+                    <input type="text" id="activationCode" 
+                           class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                           placeholder="请输入激活码">
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-2">邮箱地址</label>
+                    <input type="email" id="userEmail" 
+                           class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                           placeholder="请输入邮箱地址">
+                </div>
+            </div>
+            <div class="mt-4">
+                <button id="activateBtn" class="bg-green-600 text-white px-6 py-2 rounded-lg hover:bg-green-700">
+                    <i class="fas fa-rocket mr-2"></i>立即激活
+                </button>
+            </div>
+        </div>
+
+        <!-- 状态显示区域 -->
+        <div id="statusArea" class="hidden bg-white rounded-lg shadow-md p-6 mb-8">
+            <div id="statusContent"></div>
+        </div>
+
+        <!-- 功能说明区域 -->
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+            <div class="bg-white rounded-lg shadow-md p-6">
+                <div class="text-center">
+                    <i class="fas fa-shield-alt text-blue-600 text-3xl mb-4"></i>
+                    <h3 class="text-lg font-semibold text-gray-800 mb-2">安全可靠</h3>
+                    <p class="text-gray-600">采用加密算法生成激活码，确保安全性和唯一性</p>
+                </div>
+            </div>
+            <div class="bg-white rounded-lg shadow-md p-6">
+                <div class="text-center">
+                    <i class="fas fa-clock text-green-600 text-3xl mb-4"></i>
+                    <h3 class="text-lg font-semibold text-gray-800 mb-2">灵活期限</h3>
+                    <p class="text-gray-600">支持自定义激活码有效期，满足不同业务需求</p>
+                </div>
+            </div>
+            <div class="bg-white rounded-lg shadow-md p-6">
+                <div class="text-center">
+                    <i class="fas fa-chart-line text-purple-600 text-3xl mb-4"></i>
+                    <h3 class="text-lg font-semibold text-gray-800 mb-2">使用统计</h3>
+                    <p class="text-gray-600">详细的激活记录和使用统计，便于管理和分析</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 生成激活码模态框 -->
+    <div id="generateModal" class="hidden fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full z-50">
+        <div class="relative top-20 mx-auto p-5 border w-96 shadow-lg rounded-md bg-white">
+            <div class="mt-3">
+                <h3 class="text-lg font-medium text-gray-900 mb-4">生成激活码</h3>
+                <form id="generateForm">
+                    <div class="mb-4">
+                        <label class="block text-sm font-medium text-gray-700 mb-2">类型</label>
+                        <select id="keyType" class="w-full px-3 py-2 border border-gray-300 rounded-md">
+                            <option value="premium">Premium</option>
+                            <option value="standard">Standard</option>
+                            <option value="trial">Trial</option>
+                        </select>
+                    </div>
+                    <div class="mb-4">
+                        <label class="block text-sm font-medium text-gray-700 mb-2">最大使用次数</label>
+                        <input type="number" id="maxUses" value="1" min="1" 
+                               class="w-full px-3 py-2 border border-gray-300 rounded-md">
+                    </div>
+                    <div class="mb-4">
+                        <label class="block text-sm font-medium text-gray-700 mb-2">过期天数</label>
+                        <input type="number" id="expiryDays" value="365" min="1" 
+                               class="w-full px-3 py-2 border border-gray-300 rounded-md">
+                    </div>
+                    <div class="flex justify-end space-x-3">
+                        <button type="button" id="cancelGenerate" 
+                                class="px-4 py-2 bg-gray-300 text-gray-700 rounded-md hover:bg-gray-400">
+                            取消
+                        </button>
+                        <button type="submit" 
+                                class="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700">
+                            生成
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // API基础URL
+        const API_BASE = '/api/v1';
+
+        // 显示状态信息
+        function showStatus(message, type = 'info') {
+            const statusArea = document.getElementById('statusArea');
+            const statusContent = document.getElementById('statusContent');
+            
+            const bgColor = type === 'success' ? 'bg-green-100' : 
+                           type === 'error' ? 'bg-red-100' : 'bg-blue-100';
+            const textColor = type === 'success' ? 'text-green-800' : 
+                             type === 'error' ? 'text-red-800' : 'text-blue-800';
+            const icon = type === 'success' ? 'fas fa-check-circle' : 
+                        type === 'error' ? 'fas fa-exclamation-circle' : 'fas fa-info-circle';
+
+            statusContent.innerHTML = `
+                <div class="${bgColor} border-l-4 border-${type === 'success' ? 'green' : type === 'error' ? 'red' : 'blue'}-500 p-4">
+                    <div class="flex">
+                        <div class="flex-shrink-0">
+                            <i class="${icon} ${textColor}"></i>
+                        </div>
+                        <div class="ml-3">
+                            <p class="${textColor}">${message}</p>
+                        </div>
+                    </div>
+                </div>
+            `;
+            
+            statusArea.classList.remove('hidden');
+            
+            // 5秒后自动隐藏
+            setTimeout(() => {
+                statusArea.classList.add('hidden');
+            }, 5000);
+        }
+
+        // 激活码验证
+        document.getElementById('activateBtn').addEventListener('click', async () => {
+            const code = document.getElementById('activationCode').value.trim();
+            const email = document.getElementById('userEmail').value.trim();
+
+            if (!code || !email) {
+                showStatus('请填写激活码和邮箱地址', 'error');
+                return;
+            }
+
+            try {
+                const response = await fetch(`${API_BASE}/activate`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        code: code,
+                        user_email: email
+                    })
+                });
+
+                const data = await response.json();
+
+                if (response.ok) {
+                    showStatus('激活成功！', 'success');
+                    document.getElementById('activationCode').value = '';
+                    document.getElementById('userEmail').value = '';
+                } else {
+                    showStatus(data.message || '激活失败', 'error');
+                }
+            } catch (error) {
+                showStatus('网络错误，请稍后重试', 'error');
+            }
+        });
+
+        // 生成激活码模态框
+        document.getElementById('generateBtn').addEventListener('click', () => {
+            document.getElementById('generateModal').classList.remove('hidden');
+        });
+
+        document.getElementById('cancelGenerate').addEventListener('click', () => {
+            document.getElementById('generateModal').classList.add('hidden');
+        });
+
+        // 生成激活码表单提交
+        document.getElementById('generateForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+
+            const type = document.getElementById('keyType').value;
+            const maxUses = parseInt(document.getElementById('maxUses').value);
+            const expiryDays = parseInt(document.getElementById('expiryDays').value);
+
+            try {
+                const response = await fetch(`${API_BASE}/keys/generate`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        type: type,
+                        max_uses: maxUses,
+                        expires_at: new Date(Date.now() + expiryDays * 24 * 60 * 60 * 1000).toISOString()
+                    })
+                });
+
+                const data = await response.json();
+
+                if (response.ok) {
+                    showStatus(`激活码生成成功：${data.data.code}`, 'success');
+                    document.getElementById('generateModal').classList.add('hidden');
+                } else {
+                    showStatus(data.message || '生成失败', 'error');
+                }
+            } catch (error) {
+                showStatus('网络错误，请稍后重试', 'error');
+            }
+        });
+
+        // 点击模态框外部关闭
+        document.getElementById('generateModal').addEventListener('click', (e) => {
+            if (e.target === document.getElementById('generateModal')) {
+                document.getElementById('generateModal').classList.add('hidden');
+            }
+        });
+    </script>
+</body>
+</html> 

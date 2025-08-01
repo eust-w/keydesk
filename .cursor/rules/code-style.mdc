@@ -1,0 +1,383 @@
+# 代码风格规范
+
+## 概述
+KeyDesk项目遵循统一的代码风格规范，确保代码的可读性、可维护性和一致性。
+
+## 通用规范
+
+### 命名规范
+- 使用有意义的变量名和函数名
+- 避免使用缩写，除非是广泛接受的缩写
+- 使用驼峰命名法（camelCase）用于变量和函数
+- 使用帕斯卡命名法（PascalCase）用于类和接口
+- 使用下划线命名法（snake_case）用于常量
+- 使用kebab-case用于文件名和URL
+
+### 注释规范
+```typescript
+/**
+ * 激活码生成器类
+ * 负责根据模板生成唯一的激活码
+ * 
+ * @example
+ * ```typescript
+ * const generator = new ActivationCodeGenerator();
+ * const code = await generator.generate(template);
+ * ```
+ */
+class ActivationCodeGenerator {
+  /**
+   * 生成激活码
+   * @param template - 激活码模板
+   * @param options - 生成选项
+   * @returns 生成的激活码
+   * @throws {ValidationError} 当模板无效时抛出
+   */
+  async generate(template: Template, options?: GenerateOptions): Promise<ActivationCode> {
+    // 实现逻辑
+  }
+}
+```
+
+### 错误处理
+```typescript
+// 使用自定义错误类
+class ActivationCodeError extends Error {
+  constructor(
+    message: string,
+    public code: string,
+    public details?: any
+  ) {
+    super(message);
+    this.name = 'ActivationCodeError';
+  }
+}
+
+// 错误处理示例
+try {
+  const code = await generateCode(template);
+  return code;
+} catch (error) {
+  if (error instanceof ValidationError) {
+    throw new ActivationCodeError('模板验证失败', 'VALIDATION_ERROR', error.details);
+  }
+  throw new ActivationCodeError('生成激活码失败', 'GENERATION_ERROR', error);
+}
+```
+
+## TypeScript规范
+
+### 类型定义
+```typescript
+// 使用接口定义对象结构
+interface ActivationCode {
+  id: string;
+  code: string;
+  templateId: string;
+  customFields: Record<string, any>;
+  status: ActivationCodeStatus;
+  usageCount: number;
+  maxUsage: number;
+  createdAt: Date;
+  updatedAt: Date;
+  expiresAt?: Date;
+  usedAt?: Date;
+  metadata?: Record<string, any>;
+}
+
+// 使用枚举定义常量
+enum ActivationCodeStatus {
+  ACTIVE = 'active',
+  USED = 'used',
+  EXPIRED = 'expired',
+  REVOKED = 'revoked'
+}
+
+// 使用联合类型
+type ValidationResult = 'valid' | 'invalid' | 'expired';
+
+// 使用泛型
+interface Repository<T> {
+  findById(id: string): Promise<T | null>;
+  save(entity: T): Promise<T>;
+  delete(id: string): Promise<void>;
+}
+```
+
+### 函数规范
+```typescript
+// 使用箭头函数
+const validateCode = async (code: string): Promise<ValidationResult> => {
+  // 实现逻辑
+};
+
+// 使用可选参数和默认值
+const generateCode = (
+  template: Template,
+  options: GenerateOptions = {},
+  metadata?: Record<string, any>
+): Promise<ActivationCode> => {
+  // 实现逻辑
+};
+
+// 使用解构赋值
+const { id, code, status } = activationCode;
+const { name, description, ...rest } = template;
+```
+
+### 异步处理
+```typescript
+// 使用 async/await
+async function processActivationCode(code: string): Promise<void> {
+  try {
+    const validation = await validateCode(code);
+    if (validation.isValid) {
+      await updateUsageCount(code);
+      await logUsage(code);
+    }
+  } catch (error) {
+    await logError(error);
+    throw error;
+  }
+}
+
+// 使用 Promise.all 并行处理
+async function batchProcess(codes: string[]): Promise<void> {
+  const promises = codes.map(code => processActivationCode(code));
+  await Promise.all(promises);
+}
+```
+
+## 项目结构规范
+
+### 目录结构
+```
+src/
+├── api/                    # API相关
+│   ├── controllers/        # 控制器
+│   ├── middlewares/        # 中间件
+│   ├── routes/            # 路由
+│   └── validators/        # 验证器
+├── core/                  # 核心业务逻辑
+│   ├── generators/        # 生成器
+│   ├── validators/        # 验证器
+│   └── services/          # 服务层
+├── database/              # 数据库相关
+│   ├── models/           # 数据模型
+│   ├── migrations/       # 数据迁移
+│   └── repositories/     # 数据访问层
+├── utils/                 # 工具函数
+├── types/                 # 类型定义
+└── config/               # 配置文件
+```
+
+### 文件命名
+- 使用kebab-case命名文件
+- 类文件使用PascalCase
+- 测试文件以.test.ts或.spec.ts结尾
+- 类型定义文件以.types.ts结尾
+
+## 测试规范
+
+### 单元测试
+```typescript
+describe('ActivationCodeGenerator', () => {
+  let generator: ActivationCodeGenerator;
+  let mockTemplate: Template;
+
+  beforeEach(() => {
+    generator = new ActivationCodeGenerator();
+    mockTemplate = createMockTemplate();
+  });
+
+  describe('generate', () => {
+    it('should generate valid activation code', async () => {
+      // Arrange
+      const expectedPattern = /^[A-Z0-9]{8}$/;
+
+      // Act
+      const result = await generator.generate(mockTemplate);
+
+      // Assert
+      expect(result.code).toMatch(expectedPattern);
+      expect(result.templateId).toBe(mockTemplate.id);
+      expect(result.status).toBe('active');
+    });
+
+    it('should throw error for invalid template', async () => {
+      // Arrange
+      const invalidTemplate = { ...mockTemplate, codePattern: '' };
+
+      // Act & Assert
+      await expect(generator.generate(invalidTemplate))
+        .rejects
+        .toThrow(ValidationError);
+    });
+  });
+});
+```
+
+### 集成测试
+```typescript
+describe('ActivationCode API', () => {
+  let app: Express;
+  let db: Db;
+
+  beforeAll(async () => {
+    app = createTestApp();
+    db = await connectTestDatabase();
+  });
+
+  afterAll(async () => {
+    await db.close();
+  });
+
+  beforeEach(async () => {
+    await db.collection('activation_codes').deleteMany({});
+  });
+
+  it('should create activation code', async () => {
+    const response = await request(app)
+      .post('/api/v1/activation-codes')
+      .send({
+        templateId: 'template-id',
+        customFields: { userId: 'user-123' }
+      })
+      .expect(201);
+
+    expect(response.body.success).toBe(true);
+    expect(response.body.data.code).toBeDefined();
+  });
+});
+```
+
+## 性能规范
+
+### 代码优化
+```typescript
+// 使用缓存
+const codeCache = new Map<string, ActivationCode>();
+
+const getCachedCode = async (id: string): Promise<ActivationCode | null> => {
+  if (codeCache.has(id)) {
+    return codeCache.get(id)!;
+  }
+  
+  const code = await repository.findById(id);
+  if (code) {
+    codeCache.set(id, code);
+  }
+  return code;
+};
+
+// 使用批量操作
+const batchUpdateStatus = async (ids: string[], status: ActivationCodeStatus): Promise<void> => {
+  await repository.updateMany(
+    { _id: { $in: ids } },
+    { $set: { status, updatedAt: new Date() } }
+  );
+};
+
+// 避免N+1查询
+const getCodesWithTemplates = async (codes: ActivationCode[]): Promise<ActivationCodeWithTemplate[]> => {
+  const templateIds = [...new Set(codes.map(c => c.templateId))];
+  const templates = await templateRepository.findByIds(templateIds);
+  const templateMap = new Map(templates.map(t => [t.id, t]));
+  
+  return codes.map(code => ({
+    ...code,
+    template: templateMap.get(code.templateId)
+  }));
+};
+```
+
+## 安全规范
+
+### 输入验证
+```typescript
+// 使用验证库
+import { z } from 'zod';
+
+const CreateActivationCodeSchema = z.object({
+  templateId: z.string().min(1, '模板ID不能为空'),
+  customFields: z.record(z.any()).optional(),
+  metadata: z.record(z.any()).optional()
+});
+
+const validateCreateRequest = (data: unknown) => {
+  return CreateActivationCodeSchema.parse(data);
+};
+```
+
+### 敏感数据处理
+```typescript
+// 加密敏感数据
+import { encrypt, decrypt } from './crypto';
+
+const saveSensitiveData = async (data: ActivationCode): Promise<void> => {
+  const encryptedData = {
+    ...data,
+    customFields: encrypt(JSON.stringify(data.customFields))
+  };
+  await repository.save(encryptedData);
+};
+
+// 日志脱敏
+const logActivationCode = (code: ActivationCode): void => {
+  const sanitizedCode = {
+    ...code,
+    code: maskCode(code.code), // 脱敏处理
+    customFields: '[REDACTED]'
+  };
+  logger.info('Activation code accessed', sanitizedCode);
+};
+```
+
+## 文档规范
+
+### README文件
+```markdown
+# KeyDesk - 激活码管理系统
+
+## 项目简介
+KeyDesk是一个灵活的激活码生成和管理工具包，支持自定义字段和多种通信协议。
+
+## 快速开始
+```bash
+npm install
+npm run dev
+```
+
+## API文档
+详细的API文档请参考 [API.md](./docs/API.md)
+
+## 开发指南
+请参考 [DEVELOPMENT.md](./docs/DEVELOPMENT.md)
+```
+
+### 代码文档
+```typescript
+/**
+ * 激活码验证器
+ * 
+ * 提供激活码验证功能，包括：
+ * - 格式验证
+ * - 有效期检查
+ * - 使用次数验证
+ * - 状态检查
+ * 
+ * @example
+ * ```typescript
+ * const validator = new ActivationCodeValidator();
+ * const result = await validator.validate('ABC12345');
+ * console.log(result.isValid); // true/false
+ * ```
+ */
+class ActivationCodeValidator {
+  // 实现...
+}
+```
+description:
+globs:
+alwaysApply: false
+---

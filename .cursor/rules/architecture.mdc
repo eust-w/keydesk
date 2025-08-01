@@ -1,0 +1,572 @@
+# 架构设计规范
+
+## 概述
+KeyDesk采用微服务架构，支持高并发、高可用的激活码生成和管理服务。
+
+## 系统架构
+
+### 整体架构图
+```
+┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
+│   Client Apps   │    │   Admin Panel   │    │   Mobile App    │
+└─────────┬───────┘    └─────────┬───────┘    └─────────┬───────┘
+          │                      │                      │
+          └──────────────────────┼──────────────────────┘
+                                 │
+                    ┌─────────────┴─────────────┐
+                    │      API Gateway          │
+                    │   (Load Balancer)         │
+                    └─────────────┬─────────────┘
+                                  │
+          ┌───────────────────────┼───────────────────────┐
+          │                       │                       │
+┌─────────▼─────────┐  ┌─────────▼─────────┐  ┌─────────▼─────────┐
+│  Auth Service     │  │  Code Service     │  │  Template Service │
+│  (JWT, RBAC)      │  │  (Generate,       │  │  (Template Mgmt)  │
+│                   │  │   Validate)       │  │                   │
+└─────────┬─────────┘  └─────────┬─────────┘  └─────────┬─────────┘
+          │                      │                      │
+          └──────────────────────┼──────────────────────┘
+                                 │
+                    ┌─────────────┴─────────────┐
+                    │      MongoDB Cluster      │
+                    │   (Primary + Replicas)    │
+                    └─────────────┬─────────────┘
+                                  │
+                    ┌─────────────┴─────────────┐
+                    │      Redis Cluster        │
+                    │   (Cache + Session)       │
+                    └───────────────────────────┘
+```
+
+### 服务划分
+
+#### 1. API Gateway Service
+- 请求路由和负载均衡
+- 认证和授权
+- 限流和熔断
+- 请求日志和监控
+- API版本管理
+
+#### 2. Authentication Service
+- JWT令牌管理
+- 用户认证
+- 角色权限控制（RBAC）
+- 会话管理
+- 安全审计
+
+#### 3. Activation Code Service
+- 激活码生成
+- 激活码验证
+- 批量操作
+- 状态管理
+- 使用统计
+
+#### 4. Template Service
+- 模板管理
+- 自定义字段定义
+- 验证规则配置
+- 模板版本控制
+
+#### 5. Notification Service
+- 邮件通知
+- 短信通知
+- 推送通知
+- 消息队列
+
+## 设计原则
+
+### 1. 单一职责原则
+每个服务只负责一个特定的业务领域：
+```typescript
+// 激活码服务 - 只处理激活码相关逻辑
+class ActivationCodeService {
+  async generateCode(template: Template): Promise<ActivationCode> { }
+  async validateCode(code: string): Promise<ValidationResult> { }
+  async revokeCode(codeId: string): Promise<void> { }
+}
+
+// 模板服务 - 只处理模板相关逻辑
+class TemplateService {
+  async createTemplate(data: CreateTemplateData): Promise<Template> { }
+  async updateTemplate(id: string, data: UpdateTemplateData): Promise<Template> { }
+  async getTemplate(id: string): Promise<Template> { }
+}
+```
+
+### 2. 开闭原则
+系统对扩展开放，对修改关闭：
+```typescript
+// 可扩展的生成器接口
+interface CodeGenerator {
+  generate(template: Template): Promise<ActivationCode>;
+}
+
+// 不同的生成器实现
+class RandomCodeGenerator implements CodeGenerator {
+  async generate(template: Template): Promise<ActivationCode> { }
+}
+
+class SequentialCodeGenerator implements CodeGenerator {
+  async generate(template: Template): Promise<ActivationCode> { }
+}
+
+class CustomCodeGenerator implements CodeGenerator {
+  async generate(template: Template): Promise<ActivationCode> { }
+}
+```
+
+### 3. 依赖倒置原则
+高层模块不依赖低层模块，都依赖抽象：
+```typescript
+// 抽象接口
+interface ActivationCodeRepository {
+  findById(id: string): Promise<ActivationCode | null>;
+  save(code: ActivationCode): Promise<ActivationCode>;
+  findByTemplate(templateId: string): Promise<ActivationCode[]>;
+}
+
+// 具体实现
+class MongoActivationCodeRepository implements ActivationCodeRepository {
+  async findById(id: string): Promise<ActivationCode | null> { }
+  async save(code: ActivationCode): Promise<ActivationCode> { }
+  async findByTemplate(templateId: string): Promise<ActivationCode[]> { }
+}
+
+// 服务依赖抽象
+class ActivationCodeService {
+  constructor(
+    private repository: ActivationCodeRepository,
+    private generator: CodeGenerator
+  ) {}
+}
+```
+
+## 数据流设计
+
+### 激活码生成流程
+```typescript
+interface CodeGenerationFlow {
+  // 1. 验证请求
+  validateRequest(request: GenerateRequest): Promise<ValidationResult>;
+  
+  // 2. 获取模板
+  getTemplate(templateId: string): Promise<Template>;
+  
+  // 3. 生成激活码
+  generateCode(template: Template, options: GenerateOptions): Promise<ActivationCode>;
+  
+  // 4. 保存到数据库
+  saveCode(code: ActivationCode): Promise<ActivationCode>;
+  
+  // 5. 更新缓存
+  updateCache(code: ActivationCode): Promise<void>;
+  
+  // 6. 发送通知
+  sendNotification(code: ActivationCode): Promise<void>;
+}
+```
+
+### 激活码验证流程
+```typescript
+interface CodeValidationFlow {
+  // 1. 从缓存获取
+  getFromCache(code: string): Promise<ActivationCode | null>;
+  
+  // 2. 从数据库获取
+  getFromDatabase(code: string): Promise<ActivationCode | null>;
+  
+  // 3. 验证状态
+  validateStatus(code: ActivationCode): Promise<ValidationResult>;
+  
+  // 4. 验证有效期
+  validateExpiration(code: ActivationCode): Promise<ValidationResult>;
+  
+  // 5. 验证使用次数
+  validateUsage(code: ActivationCode): Promise<ValidationResult>;
+  
+  // 6. 更新使用记录
+  updateUsage(code: ActivationCode): Promise<void>;
+  
+  // 7. 记录日志
+  logUsage(code: ActivationCode, context: UsageContext): Promise<void>;
+}
+```
+
+## 通信协议
+
+### RESTful API
+```typescript
+// 标准RESTful端点
+interface RestfulEndpoints {
+  // 激活码管理
+  'GET /api/v1/activation-codes': '获取激活码列表';
+  'POST /api/v1/activation-codes': '创建激活码';
+  'GET /api/v1/activation-codes/:id': '获取单个激活码';
+  'PUT /api/v1/activation-codes/:id': '更新激活码';
+  'DELETE /api/v1/activation-codes/:id': '删除激活码';
+  
+  // 批量操作
+  'POST /api/v1/activation-codes/batch': '批量生成激活码';
+  'POST /api/v1/activation-codes/validate': '验证激活码';
+  
+  // 模板管理
+  'GET /api/v1/templates': '获取模板列表';
+  'POST /api/v1/templates': '创建模板';
+  'GET /api/v1/templates/:id': '获取模板详情';
+  'PUT /api/v1/templates/:id': '更新模板';
+  'DELETE /api/v1/templates/:id': '删除模板';
+}
+```
+
+### gRPC服务
+```protobuf
+service ActivationCodeService {
+  // 激活码操作
+  rpc CreateActivationCode(CreateRequest) returns (ActivationCodeResponse);
+  rpc GetActivationCode(GetRequest) returns (ActivationCodeResponse);
+  rpc UpdateActivationCode(UpdateRequest) returns (ActivationCodeResponse);
+  rpc DeleteActivationCode(DeleteRequest) returns (EmptyResponse);
+  
+  // 批量操作
+  rpc BatchGenerate(BatchGenerateRequest) returns (BatchGenerateResponse);
+  rpc BatchValidate(BatchValidateRequest) returns (BatchValidateResponse);
+  
+  // 验证操作
+  rpc ValidateCode(ValidateRequest) returns (ValidateResponse);
+  rpc UseCode(UseRequest) returns (UseResponse);
+}
+
+service TemplateService {
+  rpc CreateTemplate(CreateTemplateRequest) returns (TemplateResponse);
+  rpc GetTemplate(GetTemplateRequest) returns (TemplateResponse);
+  rpc UpdateTemplate(UpdateTemplateRequest) returns (TemplateResponse);
+  rpc DeleteTemplate(DeleteTemplateRequest) returns (EmptyResponse);
+  rpc ListTemplates(ListTemplatesRequest) returns (ListTemplatesResponse);
+}
+```
+
+### WebSocket实时通信
+```typescript
+interface WebSocketEvents {
+  // 客户端事件
+  'client:validate_code': { code: string; userId?: string };
+  'client:use_code': { code: string; userId: string; context: any };
+  
+  // 服务端事件
+  'server:validation_result': { 
+    success: boolean; 
+    code: string; 
+    result: ValidationResult;
+    timestamp: Date;
+  };
+  
+  'server:usage_updated': {
+    code: string;
+    usageCount: number;
+    maxUsage: number;
+    timestamp: Date;
+  };
+  
+  'server:code_expired': {
+    code: string;
+    expiredAt: Date;
+    timestamp: Date;
+  };
+}
+```
+
+## 缓存策略
+
+### 多层缓存架构
+```typescript
+interface CacheStrategy {
+  // L1缓存 - 内存缓存
+  l1Cache: Map<string, ActivationCode>;
+  
+  // L2缓存 - Redis缓存
+  l2Cache: RedisClient;
+  
+  // L3缓存 - 数据库
+  l3Cache: Database;
+}
+
+class MultiLevelCache {
+  async get(key: string): Promise<ActivationCode | null> {
+    // 1. 检查L1缓存
+    const l1Result = this.l1Cache.get(key);
+    if (l1Result) return l1Result;
+    
+    // 2. 检查L2缓存
+    const l2Result = await this.l2Cache.get(key);
+    if (l2Result) {
+      this.l1Cache.set(key, l2Result);
+      return l2Result;
+    }
+    
+    // 3. 从数据库获取
+    const l3Result = await this.l3Cache.findById(key);
+    if (l3Result) {
+      await this.l2Cache.set(key, l3Result, 'EX', 3600);
+      this.l1Cache.set(key, l3Result);
+      return l3Result;
+    }
+    
+    return null;
+  }
+}
+```
+
+### 缓存失效策略
+```typescript
+interface CacheInvalidationStrategy {
+  // 写入时失效
+  invalidateOnWrite(key: string): Promise<void>;
+  
+  // 定时失效
+  invalidateOnSchedule(pattern: string, interval: number): Promise<void>;
+  
+  // 事件驱动失效
+  invalidateOnEvent(event: CacheEvent): Promise<void>;
+}
+```
+
+## 安全架构
+
+### 认证授权流程
+```typescript
+interface AuthFlow {
+  // 1. 用户认证
+  authenticate(credentials: Credentials): Promise<AuthResult>;
+  
+  // 2. 生成令牌
+  generateToken(user: User): Promise<JWTToken>;
+  
+  // 3. 验证令牌
+  validateToken(token: string): Promise<User>;
+  
+  // 4. 权限检查
+  checkPermission(user: User, resource: string, action: string): Promise<boolean>;
+  
+  // 5. 角色验证
+  hasRole(user: User, role: string): Promise<boolean>;
+}
+```
+
+### 数据安全
+```typescript
+interface DataSecurity {
+  // 数据加密
+  encrypt(data: any, key: string): Promise<string>;
+  decrypt(encryptedData: string, key: string): Promise<any>;
+  
+  // 数据脱敏
+  maskSensitiveData(data: any): any;
+  
+  // 数据审计
+  auditDataAccess(user: User, resource: string, operation: string, recordId: string): Promise<void>;
+}
+```
+
+## 监控和可观测性
+
+### 监控指标
+```typescript
+interface MonitoringMetrics {
+  // 业务指标
+  businessMetrics: {
+    codesGenerated: Counter;
+    codesValidated: Counter;
+    validationSuccessRate: Gauge;
+    averageResponseTime: Histogram;
+  };
+  
+  // 系统指标
+  systemMetrics: {
+    cpuUsage: Gauge;
+    memoryUsage: Gauge;
+    databaseConnections: Gauge;
+    cacheHitRate: Gauge;
+  };
+  
+  // 错误指标
+  errorMetrics: {
+    errorRate: Counter;
+    errorTypes: Counter;
+    slowQueries: Histogram;
+  };
+}
+```
+
+### 日志规范
+```typescript
+interface LoggingStrategy {
+  // 结构化日志
+  log(level: LogLevel, message: string, context: LogContext): void;
+  
+  // 请求追踪
+  trace(requestId: string, span: Span): void;
+  
+  // 错误日志
+  error(error: Error, context: ErrorContext): void;
+  
+  // 审计日志
+  audit(user: User, action: string, resource: string, result: any): void;
+}
+```
+
+## 部署架构
+
+### 容器化部署
+```yaml
+# docker-compose.yml
+version: '3.8'
+services:
+  api-gateway:
+    image: keydesk/api-gateway:latest
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - MONGODB_URL=mongodb://mongo:27017/keydesk
+    
+  auth-service:
+    image: keydesk/auth-service:latest
+    environment:
+      - JWT_SECRET=${JWT_SECRET}
+      - MONGODB_URL=mongodb://mongo:27017/keydesk
+    
+  code-service:
+    image: keydesk/code-service:latest
+    environment:
+      - MONGODB_URL=mongodb://mongo:27017/keydesk
+      - REDIS_URL=redis://redis:6379
+    
+  template-service:
+    image: keydesk/template-service:latest
+    environment:
+      - MONGODB_URL=mongodb://mongo:27017/keydesk
+    
+  mongo:
+    image: mongo:5.0
+    volumes:
+      - mongo_data:/data/db
+    
+  redis:
+    image: redis:6.2-alpine
+    volumes:
+      - redis_data:/data
+
+volumes:
+  mongo_data:
+  redis_data:
+```
+
+### 服务发现
+```typescript
+interface ServiceDiscovery {
+  // 服务注册
+  register(service: ServiceInfo): Promise<void>;
+  
+  // 服务发现
+  discover(serviceName: string): Promise<ServiceInfo[]>;
+  
+  // 健康检查
+  healthCheck(serviceId: string): Promise<HealthStatus>;
+  
+  // 负载均衡
+  getLoadBalancedEndpoint(serviceName: string): Promise<string>;
+}
+```
+
+## 扩展性设计
+
+### 水平扩展
+```typescript
+interface ScalabilityStrategy {
+  // 服务实例扩展
+  scaleService(serviceName: string, replicas: number): Promise<void>;
+  
+  // 数据库分片
+  shardDatabase(shardKey: string): Promise<void>;
+  
+  // 缓存集群扩展
+  expandCacheCluster(nodes: number): Promise<void>;
+  
+  // 负载均衡配置
+  configureLoadBalancer(config: LoadBalancerConfig): Promise<void>;
+}
+```
+
+### 垂直扩展
+```typescript
+interface VerticalScaling {
+  // 增加CPU资源
+  increaseCPU(serviceName: string, cores: number): Promise<void>;
+  
+  // 增加内存资源
+  increaseMemory(serviceName: string, memory: string): Promise<void>;
+  
+  // 优化数据库配置
+  optimizeDatabase(config: DatabaseConfig): Promise<void>;
+  
+  // 优化缓存配置
+  optimizeCache(config: CacheConfig): Promise<void>;
+}
+```
+
+## 容错设计
+
+### 故障恢复
+```typescript
+interface FaultTolerance {
+  // 断路器模式
+  circuitBreaker: {
+    openThreshold: number;
+    closeThreshold: number;
+    timeout: number;
+  };
+  
+  // 重试机制
+  retry: {
+    maxAttempts: number;
+    backoffStrategy: 'exponential' | 'linear';
+    timeout: number;
+  };
+  
+  // 降级策略
+  fallback: {
+    enabled: boolean;
+    strategy: 'cache' | 'default' | 'error';
+  };
+  
+  // 超时控制
+  timeout: {
+    request: number;
+    database: number;
+    cache: number;
+  };
+}
+```
+
+### 健康检查
+```typescript
+interface HealthCheck {
+  // 服务健康检查
+  checkServiceHealth(serviceName: string): Promise<HealthStatus>;
+  
+  // 数据库健康检查
+  checkDatabaseHealth(): Promise<HealthStatus>;
+  
+  // 缓存健康检查
+  checkCacheHealth(): Promise<HealthStatus>;
+  
+  // 依赖服务检查
+  checkDependencies(): Promise<DependencyHealth[]>;
+}
+```
+description:
+globs:
+alwaysApply: false
+---

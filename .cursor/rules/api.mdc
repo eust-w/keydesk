@@ -1,0 +1,183 @@
+# API开发规范
+
+## 概述
+KeyDesk是一个灵活的激活码生成和管理工具包，支持RESTful和RPC通信方式。
+
+## 架构原则
+- 采用微服务架构，支持水平扩展
+- 支持多种通信协议（RESTful API、gRPC、WebSocket）
+- 基于MongoDB存储，支持灵活的字段自定义
+- 遵循RESTful设计原则和最佳实践
+
+## RESTful API规范
+
+### URL设计
+```
+GET    /api/v1/activation-codes          # 获取激活码列表
+POST   /api/v1/activation-codes          # 创建激活码
+GET    /api/v1/activation-codes/{id}     # 获取单个激活码
+PUT    /api/v1/activation-codes/{id}     # 更新激活码
+DELETE /api/v1/activation-codes/{id}     # 删除激活码
+POST   /api/v1/activation-codes/batch    # 批量生成激活码
+POST   /api/v1/activation-codes/validate # 验证激活码
+GET    /api/v1/templates                 # 获取模板列表
+POST   /api/v1/templates                 # 创建模板
+```
+
+### 响应格式
+```json
+{
+  "success": true,
+  "data": {},
+  "message": "操作成功",
+  "timestamp": "2024-01-01T00:00:00Z",
+  "requestId": "uuid-string"
+}
+```
+
+### 错误处理
+```json
+{
+  "success": false,
+  "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "参数验证失败",
+    "details": []
+  },
+  "timestamp": "2024-01-01T00:00:00Z",
+  "requestId": "uuid-string"
+}
+```
+
+## gRPC规范
+
+### 服务定义
+```protobuf
+service ActivationCodeService {
+  rpc CreateActivationCode(CreateRequest) returns (ActivationCodeResponse);
+  rpc GetActivationCode(GetRequest) returns (ActivationCodeResponse);
+  rpc UpdateActivationCode(UpdateRequest) returns (ActivationCodeResponse);
+  rpc DeleteActivationCode(DeleteRequest) returns (EmptyResponse);
+  rpc BatchGenerate(BatchGenerateRequest) returns (BatchGenerateResponse);
+  rpc ValidateCode(ValidateRequest) returns (ValidateResponse);
+}
+```
+
+### 消息定义
+```protobuf
+message ActivationCode {
+  string id = 1;
+  string code = 2;
+  string template_id = 3;
+  map<string, string> custom_fields = 4;
+  ActivationCodeStatus status = 5;
+  google.protobuf.Timestamp created_at = 6;
+  google.protobuf.Timestamp expires_at = 7;
+}
+```
+
+## 数据模型规范
+
+### 激活码模型
+```typescript
+interface ActivationCode {
+  id: string;
+  code: string;
+  templateId: string;
+  customFields: Record<string, any>;
+  status: 'active' | 'used' | 'expired' | 'revoked';
+  usageCount: number;
+  maxUsage: number;
+  createdAt: Date;
+  updatedAt: Date;
+  expiresAt?: Date;
+  usedAt?: Date;
+  metadata?: Record<string, any>;
+}
+```
+
+### 模板模型
+```typescript
+interface Template {
+  id: string;
+  name: string;
+  description: string;
+  codePattern: string;
+  customFields: CustomField[];
+  validationRules: ValidationRule[];
+  expiresIn?: number; // 过期时间（秒）
+  maxUsage?: number;
+  createdAt: Date;
+  updatedAt: Date;
+}
+```
+
+## 安全规范
+
+### 认证授权
+- 使用JWT进行身份认证
+- 实现基于角色的访问控制（RBAC）
+- API密钥管理
+- 请求频率限制
+
+### 数据验证
+- 输入参数严格验证
+- SQL注入防护
+- XSS防护
+- 敏感数据加密存储
+
+## 性能规范
+
+### 缓存策略
+- Redis缓存热点数据
+- 激活码验证结果缓存
+- 模板信息缓存
+
+### 数据库优化
+- 索引优化
+- 分页查询
+- 批量操作
+- 读写分离
+
+## 监控和日志
+
+### 日志规范
+```typescript
+interface LogEntry {
+  level: 'debug' | 'info' | 'warn' | 'error';
+  message: string;
+  timestamp: Date;
+  requestId: string;
+  userId?: string;
+  action: string;
+  metadata?: Record<string, any>;
+}
+```
+
+### 监控指标
+- API响应时间
+- 错误率
+- 激活码生成/验证频率
+- 数据库连接池状态
+- 缓存命中率
+
+## 测试规范
+
+### 单元测试
+- 覆盖率 > 80%
+- 模拟外部依赖
+- 边界条件测试
+
+### 集成测试
+- API端点测试
+- 数据库操作测试
+- 缓存功能测试
+
+### 性能测试
+- 负载测试
+- 压力测试
+- 并发测试
+description:
+globs:
+alwaysApply: false
+---

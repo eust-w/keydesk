@@ -1,0 +1,516 @@
+# 安全规范
+
+## 概述
+KeyDesk系统需要遵循严格的安全标准，保护激活码数据、用户信息和系统安全。
+
+## 认证和授权
+
+### JWT令牌管理
+```typescript
+interface JWTSecurity {
+  // 令牌配置
+  config: {
+    secret: string;           // 密钥
+    algorithm: 'HS256';       // 算法
+    expiresIn: '24h';         // 过期时间
+    refreshExpiresIn: '7d';   // 刷新令牌过期时间
+  };
+  
+  // 令牌生成
+  generateToken(payload: TokenPayload): Promise<string>;
+  
+  // 令牌验证
+  verifyToken(token: string): Promise<TokenPayload>;
+  
+  // 令牌刷新
+  refreshToken(refreshToken: string): Promise<string>;
+  
+  // 令牌撤销
+  revokeToken(tokenId: string): Promise<void>;
+}
+
+interface TokenPayload {
+  userId: string;
+  username: string;
+  roles: string[];
+  permissions: string[];
+  iat: number;
+  exp: number;
+  jti: string; // JWT ID
+}
+```
+
+### 角色权限控制（RBAC）
+```typescript
+interface RBACSystem {
+  // 角色定义
+  roles: {
+    SUPER_ADMIN: ['*'];                    // 超级管理员
+    ADMIN: ['code:read', 'code:write', 'template:read', 'template:write'];
+    OPERATOR: ['code:read', 'code:validate', 'template:read'];
+    VIEWER: ['code:read', 'template:read'];
+  };
+  
+  // 权限检查
+  hasPermission(user: User, resource: string, action: string): Promise<boolean>;
+  
+  // 角色验证
+  hasRole(user: User, role: string): Promise<boolean>;
+  
+  // 权限继承
+  getInheritedPermissions(role: string): string[];
+}
+
+// 权限装饰器
+function RequirePermission(resource: string, action: string) {
+  return function (target: any, propertyKey: string, descriptor: PropertyDescriptor) {
+    const originalMethod = descriptor.value;
+    
+    descriptor.value = async function (...args: any[]) {
+      const user = getCurrentUser();
+      if (!await rbac.hasPermission(user, resource, action)) {
+        throw new ForbiddenError('权限不足');
+      }
+      return originalMethod.apply(this, args);
+    };
+  };
+}
+```
+
+### API密钥管理
+```typescript
+interface APIKeyManagement {
+  // 生成API密钥
+  generateAPIKey(userId: string, permissions: string[]): Promise<APIKey>;
+  
+  // 验证API密钥
+  validateAPIKey(apiKey: string): Promise<APIKeyInfo>;
+  
+  // 撤销API密钥
+  revokeAPIKey(keyId: string): Promise<void>;
+  
+  // 密钥轮换
+  rotateAPIKey(keyId: string): Promise<APIKey>;
+}
+
+interface APIKey {
+  id: string;
+  key: string;
+  userId: string;
+  permissions: string[];
+  createdAt: Date;
+  expiresAt?: Date;
+  lastUsedAt?: Date;
+  isActive: boolean;
+}
+```
+
+## 数据安全
+
+### 数据加密
+```typescript
+interface DataEncryption {
+  // AES加密
+  encryptAES(data: string, key: string): Promise<string>;
+  decryptAES(encryptedData: string, key: string): Promise<string>;
+  
+  // RSA加密
+  encryptRSA(data: string, publicKey: string): Promise<string>;
+  decryptRSA(encryptedData: string, privateKey: string): Promise<string>;
+  
+  // 字段级加密
+  encryptField(value: any, fieldType: string): Promise<string>;
+  decryptField(encryptedValue: string, fieldType: string): Promise<any>;
+}
+
+// 敏感数据加密
+class SensitiveDataEncryption {
+  private readonly algorithm = 'aes-256-gcm';
+  private readonly keyLength = 32;
+  private readonly ivLength = 16;
+  
+  async encryptSensitiveData(data: any): Promise<string> {
+    const key = await this.generateKey();
+    const iv = crypto.randomBytes(this.ivLength);
+    const cipher = crypto.createCipher(this.algorithm, key, iv);
+    
+    let encrypted = cipher.update(JSON.stringify(data), 'utf8', 'hex');
+    encrypted += cipher.final('hex');
+    
+    const authTag = cipher.getAuthTag();
+    
+    return JSON.stringify({
+      encrypted,
+      iv: iv.toString('hex'),
+      authTag: authTag.toString('hex')
+    });
+  }
+  
+  async decryptSensitiveData(encryptedData: string): Promise<any> {
+    const { encrypted, iv, authTag } = JSON.parse(encryptedData);
+    const key = await this.generateKey();
+    
+    const decipher = crypto.createDecipher(this.algorithm, key, Buffer.from(iv, 'hex'));
+    decipher.setAuthTag(Buffer.from(authTag, 'hex'));
+    
+    let decrypted = decipher.update(encrypted, 'hex', 'utf8');
+    decrypted += decipher.final('utf8');
+    
+    return JSON.parse(decrypted);
+  }
+}
+```
+
+### 数据脱敏
+```typescript
+interface DataMasking {
+  // 激活码脱敏
+  maskActivationCode(code: string): string;
+  
+  // 用户信息脱敏
+  maskUserInfo(user: User): User;
+  
+  // 日志脱敏
+  maskLogData(data: any): any;
+  
+  // 响应脱敏
+  maskResponse(response: any, userRole: string): any;
+}
+
+class DataMaskingService {
+  maskActivationCode(code: string): string {
+    if (code.length <= 4) return '*'.repeat(code.length);
+    return code.substring(0, 2) + '*'.repeat(code.length - 4) + code.substring(code.length - 2);
+  }
+  
+  maskUserInfo(user: User): User {
+    return {
+      ...user,
+      email: this.maskEmail(user.email),
+      phone: this.maskPhone(user.phone),
+      customFields: '[REDACTED]'
+    };
+  }
+  
+  private maskEmail(email: string): string {
+    const [local, domain] = email.split('@');
+    return local.substring(0, 2) + '*'.repeat(local.length - 2) + '@' + domain;
+  }
+  
+  private maskPhone(phone: string): string {
+    return phone.substring(0, 3) + '*'.repeat(phone.length - 5) + phone.substring(phone.length - 2);
+  }
+}
+```
+
+## 输入验证和安全
+
+### 输入验证
+```typescript
+interface InputValidation {
+  // 激活码格式验证
+  validateCodeFormat(code: string): ValidationResult;
+  
+  // 模板验证
+  validateTemplate(template: Template): ValidationResult;
+  
+  // 自定义字段验证
+  validateCustomFields(fields: Record<string, any>, schema: CustomFieldSchema[]): ValidationResult;
+  
+  // SQL注入防护
+  sanitizeSQLInput(input: string): string;
+  
+  // XSS防护
+  sanitizeHTMLInput(input: string): string;
+}
+
+class SecurityValidator {
+  validateCodeFormat(code: string): ValidationResult {
+    // 检查长度
+    if (code.length < 4 || code.length > 50) {
+      return { isValid: false, error: '激活码长度必须在4-50字符之间' };
+    }
+    
+    // 检查字符集
+    if (!/^[A-Z0-9\-_]+$/i.test(code)) {
+      return { isValid: false, error: '激活码只能包含字母、数字、连字符和下划线' };
+    }
+    
+    // 检查重复字符
+    if (/(.)\1{3,}/.test(code)) {
+      return { isValid: false, error: '激活码不能包含连续4个相同字符' };
+    }
+    
+    return { isValid: true };
+  }
+  
+  sanitizeSQLInput(input: string): string {
+    // 移除SQL注入字符
+    return input.replace(/['";\\]/g, '');
+  }
+  
+  sanitizeHTMLInput(input: string): string {
+    // 移除HTML标签
+    return input.replace(/<[^>]*>/g, '');
+  }
+}
+```
+
+### 请求频率限制
+```typescript
+interface RateLimiting {
+  // 基于IP的限制
+  limitByIP(ip: string, limit: number, window: number): Promise<boolean>;
+  
+  // 基于用户的限制
+  limitByUser(userId: string, limit: number, window: number): Promise<boolean>;
+  
+  // 基于API密钥的限制
+  limitByAPIKey(apiKey: string, limit: number, window: number): Promise<boolean>;
+  
+  // 滑动窗口限制
+  slidingWindowLimit(key: string, limit: number, window: number): Promise<boolean>;
+}
+
+class RateLimiter {
+  private redis: Redis;
+  
+  async limitByIP(ip: string, limit: number, window: number): Promise<boolean> {
+    const key = `rate_limit:ip:${ip}`;
+    const current = await this.redis.incr(key);
+    
+    if (current === 1) {
+      await this.redis.expire(key, window);
+    }
+    
+    return current <= limit;
+  }
+  
+  async limitByUser(userId: string, limit: number, window: number): Promise<boolean> {
+    const key = `rate_limit:user:${userId}`;
+    const current = await this.redis.incr(key);
+    
+    if (current === 1) {
+      await this.redis.expire(key, window);
+    }
+    
+    return current <= limit;
+  }
+}
+```
+
+## 网络安全
+
+### HTTPS配置
+```typescript
+interface HTTPSConfig {
+  // SSL证书配置
+  ssl: {
+    cert: string;
+    key: string;
+    ca?: string;
+    passphrase?: string;
+  };
+  
+  // 安全头部配置
+  securityHeaders: {
+    'Strict-Transport-Security': 'max-age=31536000; includeSubDomains';
+    'X-Content-Type-Options': 'nosniff';
+    'X-Frame-Options': 'DENY';
+    'X-XSS-Protection': '1; mode=block';
+    'Content-Security-Policy': "default-src 'self'";
+    'Referrer-Policy': 'strict-origin-when-cross-origin';
+  };
+  
+  // CORS配置
+  cors: {
+    origin: string[];
+    methods: string[];
+    allowedHeaders: string[];
+    credentials: boolean;
+  };
+}
+```
+
+### 网络安全策略
+```typescript
+interface NetworkSecurity {
+  // IP白名单
+  ipWhitelist: string[];
+  
+  // 防火墙规则
+  firewallRules: FirewallRule[];
+  
+  // DDoS防护
+  ddosProtection: {
+    enabled: boolean;
+    threshold: number;
+    window: number;
+  };
+  
+  // 网络隔离
+  networkSegmentation: {
+    public: string[];
+    private: string[];
+    dmz: string[];
+  };
+}
+```
+
+## 审计和日志
+
+### 安全审计
+```typescript
+interface SecurityAudit {
+  // 用户行为审计
+  auditUserAction(user: User, action: string, resource: string, result: any): Promise<void>;
+  
+  // 系统访问审计
+  auditSystemAccess(ip: string, userAgent: string, endpoint: string): Promise<void>;
+  
+  // 数据访问审计
+  auditDataAccess(user: User, dataType: string, operation: string, recordId: string): Promise<void>;
+  
+  // 安全事件审计
+  auditSecurityEvent(event: SecurityEvent): Promise<void>;
+}
+
+interface SecurityEvent {
+  type: 'authentication' | 'authorization' | 'data_access' | 'system_change';
+  severity: 'low' | 'medium' | 'high' | 'critical';
+  timestamp: Date;
+  userId?: string;
+  ipAddress?: string;
+  userAgent?: string;
+  details: any;
+}
+```
+
+### 安全日志
+```typescript
+interface SecurityLogging {
+  // 登录日志
+  logLogin(attempt: LoginAttempt): Promise<void>;
+  
+  // 权限检查日志
+  logPermissionCheck(check: PermissionCheck): Promise<void>;
+  
+  // 异常访问日志
+  logAnomalousAccess(access: AnomalousAccess): Promise<void>;
+  
+  // 系统变更日志
+  logSystemChange(change: SystemChange): Promise<void>;
+}
+
+interface LoginAttempt {
+  userId?: string;
+  username: string;
+  ipAddress: string;
+  userAgent: string;
+  success: boolean;
+  timestamp: Date;
+  failureReason?: string;
+}
+```
+
+## 漏洞防护
+
+### 常见漏洞防护
+```typescript
+interface VulnerabilityProtection {
+  // SQL注入防护
+  preventSQLInjection(query: string, params: any[]): string;
+  
+  // XSS防护
+  preventXSS(input: string): string;
+  
+  // CSRF防护
+  preventCSRF(token: string): boolean;
+  
+  // 路径遍历防护
+  preventPathTraversal(path: string): string;
+  
+  // 命令注入防护
+  preventCommandInjection(command: string): string;
+}
+
+class SecurityProtection {
+  preventSQLInjection(query: string, params: any[]): string {
+    // 使用参数化查询
+    return query.replace(/\?/g, () => {
+      const param = params.shift();
+      return typeof param === 'string' ? `'${param.replace(/'/g, "''")}'` : param;
+    });
+  }
+  
+  preventXSS(input: string): string {
+    return input
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#x27;')
+      .replace(/\//g, '&#x2F;');
+  }
+  
+  preventPathTraversal(path: string): string {
+    // 规范化路径
+    const normalized = path.replace(/\.\./g, '').replace(/\/+/g, '/');
+    return normalized.startsWith('/') ? normalized : '/' + normalized;
+  }
+}
+```
+
+## 应急响应
+
+### 安全事件响应
+```typescript
+interface SecurityIncidentResponse {
+  // 事件分类
+  classifyIncident(event: SecurityEvent): IncidentLevel;
+  
+  // 自动响应
+  autoRespond(incident: SecurityIncident): Promise<void>;
+  
+  // 人工响应
+  manualRespond(incident: SecurityIncident, action: ResponseAction): Promise<void>;
+  
+  // 事件升级
+  escalateIncident(incident: SecurityIncident): Promise<void>;
+  
+  // 事件报告
+  generateIncidentReport(incident: SecurityIncident): Promise<IncidentReport>;
+}
+
+interface SecurityIncident {
+  id: string;
+  type: SecurityEventType;
+  severity: IncidentLevel;
+  timestamp: Date;
+  description: string;
+  affectedSystems: string[];
+  status: 'open' | 'investigating' | 'contained' | 'resolved';
+  responseActions: ResponseAction[];
+}
+```
+
+### 灾难恢复
+```typescript
+interface DisasterRecovery {
+  // 数据备份
+  backupData(): Promise<BackupResult>;
+  
+  // 系统恢复
+  restoreSystem(backupId: string): Promise<RestoreResult>;
+  
+  // 业务连续性
+  ensureBusinessContinuity(): Promise<void>;
+  
+  // 恢复测试
+  testRecovery(): Promise<TestResult>;
+}
+```
+description:
+globs:
+alwaysApply: false
+---

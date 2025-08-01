@@ -1,0 +1,1284 @@
+# 部署规范
+
+## 概述
+KeyDesk支持多种部署方式，包括Kubernetes集群部署、单机部署，并支持集群内外用户访问。
+
+## 部署架构
+
+### 多环境部署架构
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    External Users                           │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐        │
+│  │ Web Browser │  │ Mobile App  │  │ API Client  │        │
+│  └─────────────┘  └─────────────┘  └─────────────┘        │
+└─────────────────────┬───────────────────────────────────────┘
+                      │
+┌─────────────────────▼───────────────────────────────────────┐
+│                    Load Balancer / Ingress                  │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐        │
+│  │   Nginx     │  │   HAProxy   │  │   Traefik   │        │
+│  └─────────────┘  └─────────────┘  └─────────────┘        │
+└─────────────────────┬───────────────────────────────────────┘
+                      │
+          ┌───────────┼───────────┐
+          │           │           │
+┌─────────▼─────────┐ │ ┌─────────▼─────────┐
+│   Kubernetes      │ │ │   Standalone      │
+│   Cluster         │ │ │   Deployment      │
+│                   │ │ │                   │
+│ ┌─────────────┐   │ │ │ ┌─────────────┐   │
+│ │ API Gateway │   │ │ │ │ API Gateway │   │
+│ └─────────────┘   │ │ │ └─────────────┘   │
+│ ┌─────────────┐   │ │ │ ┌─────────────┐   │
+│ │ Auth Service│   │ │ │ │ Auth Service│   │
+│ └─────────────┘   │ │ │ └─────────────┘   │
+│ ┌─────────────┐   │ │ │ ┌─────────────┐   │
+│ │Code Service │   │ │ │ │Code Service │   │
+│ └─────────────┘   │ │ │ └─────────────┘   │
+│ ┌─────────────┐   │ │ │ ┌─────────────┐   │
+│ │MongoDB      │   │ │ │ │MongoDB      │   │
+│ └─────────────┘   │ │ │ └─────────────┘   │
+│ ┌─────────────┐   │ │ │ ┌─────────────┐   │
+│ │Redis        │   │ │ │ │Redis        │   │
+│ └─────────────┘   │ │ │ └─────────────┘   │
+└───────────────────┘ │ └───────────────────┘
+                      │
+          ┌───────────┴───────────┐
+          │                       │
+┌─────────▼─────────┐ ┌─────────▼─────────┐
+│   Internal        │ │   External        │
+│   Network         │ │   Network         │
+│   (Cluster)       │ │   (Internet)      │
+└───────────────────┘ └───────────────────┘
+```
+
+## Kubernetes部署
+
+### 命名空间配置
+```yaml
+# k8s/namespace.yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: keydesk
+  labels:
+    name: keydesk
+    environment: production
+```
+
+### ConfigMap配置
+```yaml
+# k8s/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: keydesk-config
+  namespace: keydesk
+data:
+  # 应用配置
+  NODE_ENV: "production"
+  PORT: "3000"
+  
+  # 数据库配置
+  MONGODB_URI: "mongodb://keydesk-mongo:27017/keydesk"
+  REDIS_URL: "redis://keydesk-redis:6379"
+  
+  # 安全配置
+  JWT_SECRET: "your-jwt-secret"
+  API_KEY_SECRET: "your-api-key-secret"
+  
+  # 业务配置
+  CODE_GENERATION_LIMIT: "1000"
+  VALIDATION_CACHE_TTL: "3600"
+  
+  # 监控配置
+  METRICS_ENABLED: "true"
+  LOG_LEVEL: "info"
+```
+
+### Secret配置
+```yaml
+# k8s/secret.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: keydesk-secrets
+  namespace: keydesk
+type: Opaque
+data:
+  # Base64编码的敏感信息
+  JWT_SECRET: <base64-encoded-jwt-secret>
+  API_KEY_SECRET: <base64-encoded-api-key-secret>
+  MONGODB_PASSWORD: <base64-encoded-mongodb-password>
+  REDIS_PASSWORD: <base64-encoded-redis-password>
+```
+
+### API Gateway部署
+```yaml
+# k8s/api-gateway.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: keydesk-api-gateway
+  namespace: keydesk
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: keydesk-api-gateway
+  template:
+    metadata:
+      labels:
+        app: keydesk-api-gateway
+    spec:
+      containers:
+      - name: api-gateway
+        image: keydesk/api-gateway:latest
+        ports:
+        - containerPort: 80
+        - containerPort: 443
+        env:
+        - name: NODE_ENV
+          valueFrom:
+            configMapKeyRef:
+              name: keydesk-config
+              key: NODE_ENV
+        - name: REDIS_URL
+          valueFrom:
+            configMapKeyRef:
+              name: keydesk-config
+              key: REDIS_URL
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "250m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 80
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 80
+          initialDelaySeconds: 5
+          periodSeconds: 5
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: keydesk-api-gateway-service
+  namespace: keydesk
+spec:
+  selector:
+    app: keydesk-api-gateway
+  ports:
+  - name: http
+    port: 80
+    targetPort: 80
+  - name: https
+    port: 443
+    targetPort: 443
+  type: ClusterIP
+```
+
+### 微服务部署
+```yaml
+# k8s/services.yaml
+# Auth Service
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: keydesk-auth-service
+  namespace: keydesk
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: keydesk-auth-service
+  template:
+    metadata:
+      labels:
+        app: keydesk-auth-service
+    spec:
+      containers:
+      - name: auth-service
+        image: keydesk/auth-service:latest
+        ports:
+        - containerPort: 3000
+        env:
+        - name: JWT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: keydesk-secrets
+              key: JWT_SECRET
+        - name: MONGODB_URI
+          valueFrom:
+            configMapKeyRef:
+              name: keydesk-config
+              key: MONGODB_URI
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "200m"
+
+---
+# Code Service
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: keydesk-code-service
+  namespace: keydesk
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: keydesk-code-service
+  template:
+    metadata:
+      labels:
+        app: keydesk-code-service
+    spec:
+      containers:
+      - name: code-service
+        image: keydesk/code-service:latest
+        ports:
+        - containerPort: 3000
+        env:
+        - name: MONGODB_URI
+          valueFrom:
+            configMapKeyRef:
+              name: keydesk-config
+              key: MONGODB_URI
+        - name: REDIS_URL
+          valueFrom:
+            configMapKeyRef:
+              name: keydesk-config
+              key: REDIS_URL
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "200m"
+          limits:
+            memory: "512Mi"
+            cpu: "400m"
+
+---
+# Template Service
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: keydesk-template-service
+  namespace: keydesk
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: keydesk-template-service
+  template:
+    metadata:
+      labels:
+        app: keydesk-template-service
+    spec:
+      containers:
+      - name: template-service
+        image: keydesk/template-service:latest
+        ports:
+        - containerPort: 3000
+        env:
+        - name: MONGODB_URI
+          valueFrom:
+            configMapKeyRef:
+              name: keydesk-config
+              key: MONGODB_URI
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "200m"
+```
+
+### 数据库部署
+```yaml
+# k8s/database.yaml
+# MongoDB StatefulSet
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: keydesk-mongo
+  namespace: keydesk
+spec:
+  serviceName: keydesk-mongo
+  replicas: 3
+  selector:
+    matchLabels:
+      app: keydesk-mongo
+  template:
+    metadata:
+      labels:
+        app: keydesk-mongo
+    spec:
+      containers:
+      - name: mongo
+        image: mongo:5.0
+        ports:
+        - containerPort: 27017
+        env:
+        - name: MONGO_INITDB_ROOT_USERNAME
+          value: "admin"
+        - name: MONGO_INITDB_ROOT_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: keydesk-secrets
+              key: MONGODB_PASSWORD
+        volumeMounts:
+        - name: mongo-data
+          mountPath: /data/db
+        resources:
+          requests:
+            memory: "1Gi"
+            cpu: "500m"
+          limits:
+            memory: "2Gi"
+            cpu: "1000m"
+  volumeClaimTemplates:
+  - metadata:
+      name: mongo-data
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      resources:
+        requests:
+          storage: 10Gi
+
+---
+# Redis StatefulSet
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: keydesk-redis
+  namespace: keydesk
+spec:
+  serviceName: keydesk-redis
+  replicas: 3
+  selector:
+    matchLabels:
+      app: keydesk-redis
+  template:
+    metadata:
+      labels:
+        app: keydesk-redis
+    spec:
+      containers:
+      - name: redis
+        image: redis:6.2-alpine
+        ports:
+        - containerPort: 6379
+        command: ["redis-server", "--requirepass", "$(REDIS_PASSWORD)"]
+        env:
+        - name: REDIS_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: keydesk-secrets
+              key: REDIS_PASSWORD
+        volumeMounts:
+        - name: redis-data
+          mountPath: /data
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "100m"
+          limits:
+            memory: "512Mi"
+            cpu: "200m"
+  volumeClaimTemplates:
+  - metadata:
+      name: redis-data
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      resources:
+        requests:
+          storage: 5Gi
+```
+
+### Ingress配置
+```yaml
+# k8s/ingress.yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: keydesk-ingress
+  namespace: keydesk
+  annotations:
+    kubernetes.io/ingress.class: "nginx"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+    nginx.ingress.kubernetes.io/rate-limit: "100"
+    nginx.ingress.kubernetes.io/rate-limit-window: "1m"
+spec:
+  tls:
+  - hosts:
+    - api.keydesk.com
+    - admin.keydesk.com
+    secretName: keydesk-tls
+  rules:
+  - host: api.keydesk.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: keydesk-api-gateway-service
+            port:
+              number: 80
+  - host: admin.keydesk.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: keydesk-admin-service
+            port:
+              number: 80
+```
+
+### 服务网格配置 (Istio)
+```yaml
+# k8s/istio-virtual-service.yaml
+apiVersion: networking.istio.io/v1alpha3
+kind: VirtualService
+metadata:
+  name: keydesk-vs
+  namespace: keydesk
+spec:
+  hosts:
+  - "api.keydesk.com"
+  gateways:
+  - keydesk-gateway
+  http:
+  - match:
+    - uri:
+        prefix: "/api/v1/auth"
+    route:
+    - destination:
+        host: keydesk-auth-service
+        port:
+          number: 3000
+  - match:
+    - uri:
+        prefix: "/api/v1/activation-codes"
+    route:
+    - destination:
+        host: keydesk-code-service
+        port:
+          number: 3000
+  - match:
+    - uri:
+        prefix: "/api/v1/templates"
+    route:
+    - destination:
+        host: keydesk-template-service
+        port:
+          number: 3000
+  - route:
+    - destination:
+        host: keydesk-api-gateway-service
+        port:
+          number: 80
+
+---
+apiVersion: networking.istio.io/v1alpha3
+kind: Gateway
+metadata:
+  name: keydesk-gateway
+  namespace: keydesk
+spec:
+  selector:
+    istio: ingressgateway
+  servers:
+  - port:
+      number: 80
+      name: http
+      protocol: HTTP
+    hosts:
+    - "api.keydesk.com"
+    - "admin.keydesk.com"
+  - port:
+      number: 443
+      name: https
+      protocol: HTTPS
+    tls:
+      mode: SIMPLE
+      credentialName: keydesk-tls
+    hosts:
+    - "api.keydesk.com"
+    - "admin.keydesk.com"
+```
+
+## 单机部署
+
+### Docker Compose配置
+```yaml
+# docker-compose.yml
+version: '3.8'
+
+services:
+  # API Gateway
+  api-gateway:
+    image: keydesk/api-gateway:latest
+    container_name: keydesk-api-gateway
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      - NODE_ENV=production
+      - REDIS_URL=redis://redis:6379
+      - MONGODB_URL=mongodb://mongo:27017/keydesk
+    depends_on:
+      - redis
+      - mongo
+    networks:
+      - keydesk-network
+    restart: unless-stopped
+
+  # Auth Service
+  auth-service:
+    image: keydesk/auth-service:latest
+    container_name: keydesk-auth-service
+    environment:
+      - NODE_ENV=production
+      - JWT_SECRET=${JWT_SECRET}
+      - MONGODB_URL=mongodb://mongo:27017/keydesk
+    depends_on:
+      - mongo
+    networks:
+      - keydesk-network
+    restart: unless-stopped
+
+  # Code Service
+  code-service:
+    image: keydesk/code-service:latest
+    container_name: keydesk-code-service
+    environment:
+      - NODE_ENV=production
+      - MONGODB_URL=mongodb://mongo:27017/keydesk
+      - REDIS_URL=redis://redis:6379
+    depends_on:
+      - mongo
+      - redis
+    networks:
+      - keydesk-network
+    restart: unless-stopped
+
+  # Template Service
+  template-service:
+    image: keydesk/template-service:latest
+    container_name: keydesk-template-service
+    environment:
+      - NODE_ENV=production
+      - MONGODB_URL=mongodb://mongo:27017/keydesk
+    depends_on:
+      - mongo
+    networks:
+      - keydesk-network
+    restart: unless-stopped
+
+  # MongoDB
+  mongo:
+    image: mongo:5.0
+    container_name: keydesk-mongo
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=admin
+      - MONGO_INITDB_ROOT_PASSWORD=${MONGODB_PASSWORD}
+    volumes:
+      - mongo_data:/data/db
+      - ./scripts/mongo-init.js:/docker-entrypoint-initdb.d/mongo-init.js:ro
+    ports:
+      - "27017:27017"
+    networks:
+      - keydesk-network
+    restart: unless-stopped
+
+  # Redis
+  redis:
+    image: redis:6.2-alpine
+    container_name: keydesk-redis
+    command: redis-server --requirepass ${REDIS_PASSWORD}
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    networks:
+      - keydesk-network
+    restart: unless-stopped
+
+  # Nginx (Load Balancer)
+  nginx:
+    image: nginx:alpine
+    container_name: keydesk-nginx
+    ports:
+      - "8080:80"
+      - "8443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+    depends_on:
+      - api-gateway
+    networks:
+      - keydesk-network
+    restart: unless-stopped
+
+  # Monitoring
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: keydesk-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    networks:
+      - keydesk-network
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: keydesk-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD}
+    volumes:
+      - grafana_data:/var/lib/grafana
+    networks:
+      - keydesk-network
+    restart: unless-stopped
+
+volumes:
+  mongo_data:
+  redis_data:
+  prometheus_data:
+  grafana_data:
+
+networks:
+  keydesk-network:
+    driver: bridge
+```
+
+### Nginx配置
+```nginx
+# nginx/nginx.conf
+events {
+    worker_connections 1024;
+}
+
+http {
+    upstream api_gateway {
+        server api-gateway:80;
+    }
+
+    upstream auth_service {
+        server auth-service:3000;
+    }
+
+    upstream code_service {
+        server code-service:3000;
+    }
+
+    upstream template_service {
+        server template-service:3000;
+    }
+
+    # 限流配置
+    limit_req_zone $binary_remote_addr zone=api_limit:10m rate=10r/s;
+    limit_req_zone $binary_remote_addr zone=auth_limit:10m rate=5r/s;
+
+    server {
+        listen 80;
+        server_name localhost;
+
+        # 健康检查
+        location /health {
+            access_log off;
+            return 200 "healthy\n";
+            add_header Content-Type text/plain;
+        }
+
+        # API路由
+        location /api/v1/auth/ {
+            limit_req zone=auth_limit burst=10 nodelay;
+            proxy_pass http://auth_service/;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+        }
+
+        location /api/v1/activation-codes/ {
+            limit_req zone=api_limit burst=20 nodelay;
+            proxy_pass http://code_service/;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+        }
+
+        location /api/v1/templates/ {
+            limit_req zone=api_limit burst=20 nodelay;
+            proxy_pass http://template_service/;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+        }
+
+        # 默认路由到API Gateway
+        location / {
+            limit_req zone=api_limit burst=20 nodelay;
+            proxy_pass http://api_gateway;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+        }
+    }
+
+    server {
+        listen 443 ssl http2;
+        server_name localhost;
+
+        ssl_certificate /etc/nginx/ssl/cert.pem;
+        ssl_certificate_key /etc/nginx/ssl/key.pem;
+        ssl_protocols TLSv1.2 TLSv1.3;
+        ssl_ciphers ECDHE-RSA-AES256-GCM-SHA512:DHE-RSA-AES256-GCM-SHA512:ECDHE-RSA-AES256-GCM-SHA384:DHE-RSA-AES256-GCM-SHA384;
+        ssl_prefer_server_ciphers off;
+
+        # 与HTTP相同的location配置
+        location /health {
+            access_log off;
+            return 200 "healthy\n";
+            add_header Content-Type text/plain;
+        }
+
+        location /api/v1/auth/ {
+            limit_req zone=auth_limit burst=10 nodelay;
+            proxy_pass http://auth_service/;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+        }
+
+        location /api/v1/activation-codes/ {
+            limit_req zone=api_limit burst=20 nodelay;
+            proxy_pass http://code_service/;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+        }
+
+        location /api/v1/templates/ {
+            limit_req zone=api_limit burst=20 nodelay;
+            proxy_pass http://template_service/;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+        }
+
+        location / {
+            limit_req zone=api_limit burst=20 nodelay;
+            proxy_pass http://api_gateway;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+        }
+    }
+}
+```
+
+## 网络访问配置
+
+### 集群内访问
+```yaml
+# k8s/internal-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: keydesk-internal
+  namespace: keydesk
+  labels:
+    app: keydesk-internal
+spec:
+  selector:
+    app: keydesk-api-gateway
+  ports:
+  - name: http
+    port: 80
+    targetPort: 80
+  - name: https
+    port: 443
+    targetPort: 443
+  type: ClusterIP
+  # 集群内访问，不暴露到外部
+```
+
+### 集群外访问
+```yaml
+# k8s/external-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: keydesk-external
+  namespace: keydesk
+  labels:
+    app: keydesk-external
+spec:
+  selector:
+    app: keydesk-api-gateway
+  ports:
+  - name: http
+    port: 80
+    targetPort: 80
+  - name: https
+    port: 443
+    targetPort: 443
+  type: LoadBalancer
+  # 或者使用NodePort
+  # type: NodePort
+  # ports:
+  # - name: http
+  #   port: 80
+  #   targetPort: 80
+  #   nodePort: 30080
+```
+
+### 服务发现配置
+```yaml
+# k8s/service-discovery.yaml
+apiVersion: v1
+kind: Endpoints
+metadata:
+  name: keydesk-endpoints
+  namespace: keydesk
+subsets:
+- addresses:
+  - ip: 10.0.1.10
+  - ip: 10.0.1.11
+  - ip: 10.0.1.12
+  ports:
+  - name: http
+    port: 80
+    protocol: TCP
+  - name: https
+    port: 443
+    protocol: TCP
+```
+
+## 部署脚本
+
+### Kubernetes部署脚本
+```bash
+#!/bin/bash
+# scripts/deploy-k8s.sh
+
+set -e
+
+# 配置变量
+NAMESPACE="keydesk"
+REGISTRY="your-registry.com"
+VERSION="latest"
+
+echo "开始部署KeyDesk到Kubernetes集群..."
+
+# 创建命名空间
+kubectl apply -f k8s/namespace.yaml
+
+# 创建ConfigMap和Secret
+kubectl apply -f k8s/configmap.yaml
+kubectl apply -f k8s/secret.yaml
+
+# 部署数据库
+echo "部署MongoDB..."
+kubectl apply -f k8s/database.yaml
+kubectl wait --for=condition=ready pod -l app=keydesk-mongo -n $NAMESPACE --timeout=300s
+
+echo "部署Redis..."
+kubectl wait --for=condition=ready pod -l app=keydesk-redis -n $NAMESPACE --timeout=300s
+
+# 部署微服务
+echo "部署微服务..."
+kubectl apply -f k8s/services.yaml
+
+# 部署API Gateway
+echo "部署API Gateway..."
+kubectl apply -f k8s/api-gateway.yaml
+
+# 部署Ingress
+echo "部署Ingress..."
+kubectl apply -f k8s/ingress.yaml
+
+# 等待所有Pod就绪
+echo "等待服务就绪..."
+kubectl wait --for=condition=ready pod -l app=keydesk-api-gateway -n $NAMESPACE --timeout=300s
+
+echo "部署完成！"
+echo "API地址: https://api.keydesk.com"
+echo "管理界面: https://admin.keydesk.com"
+
+# 显示服务状态
+kubectl get pods -n $NAMESPACE
+kubectl get services -n $NAMESPACE
+kubectl get ingress -n $NAMESPACE
+```
+
+### 单机部署脚本
+```bash
+#!/bin/bash
+# scripts/deploy-standalone.sh
+
+set -e
+
+echo "开始单机部署KeyDesk..."
+
+# 检查Docker和Docker Compose
+if ! command -v docker &> /dev/null; then
+    echo "错误: Docker未安装"
+    exit 1
+fi
+
+if ! command -v docker-compose &> /dev/null; then
+    echo "错误: Docker Compose未安装"
+    exit 1
+fi
+
+# 创建环境变量文件
+if [ ! -f .env ]; then
+    echo "创建环境变量文件..."
+    cat > .env << EOF
+# 数据库配置
+MONGODB_PASSWORD=your-mongodb-password
+REDIS_PASSWORD=your-redis-password
+
+# JWT配置
+JWT_SECRET=your-jwt-secret-key
+
+# Grafana配置
+GRAFANA_PASSWORD=admin123
+
+# 其他配置
+NODE_ENV=production
+EOF
+    echo "请编辑.env文件配置密码和密钥"
+    exit 1
+fi
+
+# 创建SSL证书（自签名）
+if [ ! -f nginx/ssl/cert.pem ]; then
+    echo "生成SSL证书..."
+    mkdir -p nginx/ssl
+    openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+        -keyout nginx/ssl/key.pem \
+        -out nginx/ssl/cert.pem \
+        -subj "/C=CN/ST=State/L=City/O=Organization/CN=localhost"
+fi
+
+# 启动服务
+echo "启动服务..."
+docker-compose up -d
+
+# 等待服务就绪
+echo "等待服务就绪..."
+sleep 30
+
+# 检查服务状态
+echo "检查服务状态..."
+docker-compose ps
+
+# 健康检查
+echo "执行健康检查..."
+curl -f http://localhost:8080/health || echo "健康检查失败"
+
+echo "部署完成！"
+echo "API地址: http://localhost:8080"
+echo "HTTPS地址: https://localhost:8443"
+echo "Grafana监控: http://localhost:3000"
+echo "Prometheus: http://localhost:9090"
+```
+
+### 回滚脚本
+```bash
+#!/bin/bash
+# scripts/rollback.sh
+
+set -e
+
+NAMESPACE="keydesk"
+PREVIOUS_VERSION="v1.0.0"
+
+echo "开始回滚到版本: $PREVIOUS_VERSION"
+
+# 回滚部署
+kubectl rollout undo deployment/keydesk-api-gateway -n $NAMESPACE
+kubectl rollout undo deployment/keydesk-auth-service -n $NAMESPACE
+kubectl rollout undo deployment/keydesk-code-service -n $NAMESPACE
+kubectl rollout undo deployment/keydesk-template-service -n $NAMESPACE
+
+# 等待回滚完成
+echo "等待回滚完成..."
+kubectl rollout status deployment/keydesk-api-gateway -n $NAMESPACE
+kubectl rollout status deployment/keydesk-auth-service -n $NAMESPACE
+kubectl rollout status deployment/keydesk-code-service -n $NAMESPACE
+kubectl rollout status deployment/keydesk-template-service -n $NAMESPACE
+
+echo "回滚完成！"
+```
+
+## 监控和日志
+
+### Prometheus配置
+```yaml
+# monitoring/prometheus.yml
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - "alert_rules.yml"
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+          - alertmanager:9093
+
+scrape_configs:
+  - job_name: 'keydesk-api-gateway'
+    static_configs:
+      - targets: ['api-gateway:80']
+    metrics_path: '/metrics'
+    scrape_interval: 10s
+
+  - job_name: 'keydesk-auth-service'
+    static_configs:
+      - targets: ['auth-service:3000']
+    metrics_path: '/metrics'
+    scrape_interval: 10s
+
+  - job_name: 'keydesk-code-service'
+    static_configs:
+      - targets: ['code-service:3000']
+    metrics_path: '/metrics'
+    scrape_interval: 10s
+
+  - job_name: 'keydesk-template-service'
+    static_configs:
+      - targets: ['template-service:3000']
+    metrics_path: '/metrics'
+    scrape_interval: 10s
+
+  - job_name: 'mongodb'
+    static_configs:
+      - targets: ['mongo:27017']
+    scrape_interval: 30s
+
+  - job_name: 'redis'
+    static_configs:
+      - targets: ['redis:6379']
+    scrape_interval: 30s
+```
+
+### Grafana仪表板
+```json
+{
+  "dashboard": {
+    "title": "KeyDesk监控仪表板",
+    "panels": [
+      {
+        "title": "API请求率",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "rate(http_requests_total[5m])",
+            "legendFormat": "{{service}}"
+          }
+        ]
+      },
+      {
+        "title": "响应时间",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.95, rate(http_request_duration_seconds_bucket[5m]))",
+            "legendFormat": "95th percentile"
+          }
+        ]
+      },
+      {
+        "title": "错误率",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "rate(http_requests_total{status=~\"5..\"}[5m])",
+            "legendFormat": "5xx errors"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+## 安全配置
+
+### 网络策略
+```yaml
+# k8s/network-policy.yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: keydesk-network-policy
+  namespace: keydesk
+spec:
+  podSelector:
+    matchLabels:
+      app: keydesk
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: ingress-nginx
+    ports:
+    - protocol: TCP
+      port: 80
+    - protocol: TCP
+      port: 443
+  - from:
+    - podSelector:
+        matchLabels:
+          app: keydesk
+    ports:
+    - protocol: TCP
+      port: 3000
+  egress:
+  - to:
+    - podSelector:
+        matchLabels:
+          app: keydesk-mongo
+    ports:
+    - protocol: TCP
+      port: 27017
+  - to:
+    - podSelector:
+        matchLabels:
+          app: keydesk-redis
+    ports:
+    - protocol: TCP
+      port: 6379
+  - to: []
+    ports:
+    - protocol: TCP
+      port: 53
+    - protocol: UDP
+      port: 53
+```
+
+### RBAC配置
+```yaml
+# k8s/rbac.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: keydesk-service-account
+  namespace: keydesk
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: keydesk-role
+  namespace: keydesk
+rules:
+- apiGroups: [""]
+  resources: ["pods", "services", "endpoints"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: [""]
+  resources: ["configmaps", "secrets"]
+  verbs: ["get"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: keydesk-role-binding
+  namespace: keydesk
+subjects:
+- kind: ServiceAccount
+  name: keydesk-service-account
+  namespace: keydesk
+roleRef:
+  kind: Role
+  name: keydesk-role
+  apiGroup: rbac.authorization.k8s.io
+```
+
+## 部署检查清单
+
+### 部署前检查
+- [ ] 环境变量配置完整
+- [ ] 数据库连接正常
+- [ ] 网络策略配置正确
+- [ ] SSL证书有效
+- [ ] 监控配置正确
+- [ ] 备份策略就绪
+
+### 部署后验证
+- [ ] 所有Pod状态为Running
+- [ ] 服务端口可访问
+- [ ] 健康检查通过
+- [ ] 监控指标正常
+- [ ] 日志输出正常
+- [ ] 性能测试通过
+
+### 故障排查
+```bash
+# 查看Pod状态
+kubectl get pods -n keydesk
+
+# 查看Pod日志
+kubectl logs -f deployment/keydesk-api-gateway -n keydesk
+
+# 查看服务状态
+kubectl get services -n keydesk
+
+# 查看Ingress状态
+kubectl get ingress -n keydesk
+
+# 进入Pod调试
+kubectl exec -it deployment/keydesk-api-gateway -n keydesk -- /bin/bash
+
+# 查看资源使用情况
+kubectl top pods -n keydesk
+```
+description:
+globs:
+alwaysApply: false
+---

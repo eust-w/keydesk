@@ -1,0 +1,810 @@
+# 网络访问规范
+
+## 概述
+KeyDesk系统需要支持集群内和集群外用户的访问，提供灵活的网络访问配置。
+
+## 访问模式
+
+### 1. 集群内访问
+- 服务间通信
+- 内部API调用
+- 管理界面访问
+- 监控和日志访问
+
+### 2. 集群外访问
+- 外部用户API访问
+- 移动应用访问
+- 第三方系统集成
+- 管理后台访问
+
+## Kubernetes网络配置
+
+### 服务类型选择
+
+#### ClusterIP (集群内访问)
+```yaml
+# k8s/internal-services.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: keydesk-internal-api
+  namespace: keydesk
+  labels:
+    app: keydesk-internal
+    access: internal
+spec:
+  selector:
+    app: keydesk-api-gateway
+  ports:
+  - name: http
+    port: 80
+    targetPort: 80
+  - name: https
+    port: 443
+    targetPort: 443
+  type: ClusterIP
+  # 仅在集群内可访问
+```
+
+#### NodePort (节点端口访问)
+```yaml
+# k8s/nodeport-services.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: keydesk-nodeport-api
+  namespace: keydesk
+  labels:
+    app: keydesk-nodeport
+    access: external
+spec:
+  selector:
+    app: keydesk-api-gateway
+  ports:
+  - name: http
+    port: 80
+    targetPort: 80
+    nodePort: 30080  # 节点端口
+  - name: https
+    port: 443
+    targetPort: 443
+    nodePort: 30443  # 节点端口
+  type: NodePort
+  # 通过节点IP:端口访问
+```
+
+#### LoadBalancer (负载均衡访问)
+```yaml
+# k8s/loadbalancer-services.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: keydesk-external-api
+  namespace: keydesk
+  labels:
+    app: keydesk-external
+    access: external
+spec:
+  selector:
+    app: keydesk-api-gateway
+  ports:
+  - name: http
+    port: 80
+    targetPort: 80
+  - name: https
+    port: 443
+    targetPort: 443
+  type: LoadBalancer
+  # 自动分配外部IP
+  externalTrafficPolicy: Local  # 保持源IP
+```
+
+### Ingress配置
+
+#### 多域名Ingress
+```yaml
+# k8s/multi-domain-ingress.yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: keydesk-multi-domain-ingress
+  namespace: keydesk
+  annotations:
+    kubernetes.io/ingress.class: "nginx"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+    nginx.ingress.kubernetes.io/rate-limit: "100"
+    nginx.ingress.kubernetes.io/rate-limit-window: "1m"
+    # 内部访问白名单
+    nginx.ingress.kubernetes.io/whitelist-source-range: "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
+spec:
+  tls:
+  - hosts:
+    - api.keydesk.com
+    - admin.keydesk.com
+    - internal.keydesk.com
+    secretName: keydesk-tls
+  rules:
+  # 外部API访问
+  - host: api.keydesk.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: keydesk-external-api
+            port:
+              number: 80
+  # 管理后台访问
+  - host: admin.keydesk.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: keydesk-admin-service
+            port:
+              number: 80
+  # 内部访问
+  - host: internal.keydesk.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: keydesk-internal-api
+            port:
+              number: 80
+```
+
+#### 路径路由Ingress
+```yaml
+# k8s/path-based-ingress.yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: keydesk-path-ingress
+  namespace: keydesk
+  annotations:
+    kubernetes.io/ingress.class: "nginx"
+    nginx.ingress.kubernetes.io/rewrite-target: /$2
+spec:
+  tls:
+  - hosts:
+    - keydesk.com
+    secretName: keydesk-tls
+  rules:
+  - host: keydesk.com
+    http:
+      paths:
+      # 外部API
+      - path: /api(/|$)(.*)
+        pathType: Prefix
+        backend:
+          service:
+            name: keydesk-external-api
+            port:
+              number: 80
+      # 内部API
+      - path: /internal(/|$)(.*)
+        pathType: Prefix
+        backend:
+          service:
+            name: keydesk-internal-api
+            port:
+              number: 80
+      # 管理后台
+      - path: /admin(/|$)(.*)
+        pathType: Prefix
+        backend:
+          service:
+            name: keydesk-admin-service
+            port:
+              number: 80
+      # 监控
+      - path: /monitor(/|$)(.*)
+        pathType: Prefix
+        backend:
+          service:
+            name: keydesk-monitor-service
+            port:
+              number: 80
+```
+
+### 网络策略
+
+#### 内部访问策略
+```yaml
+# k8s/internal-network-policy.yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: keydesk-internal-policy
+  namespace: keydesk
+spec:
+  podSelector:
+    matchLabels:
+      app: keydesk
+      access: internal
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  # 允许集群内服务访问
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: keydesk
+    ports:
+    - protocol: TCP
+      port: 3000
+  # 允许监控系统访问
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: monitoring
+    ports:
+    - protocol: TCP
+      port: 3000
+  egress:
+  # 允许访问数据库
+  - to:
+    - podSelector:
+        matchLabels:
+          app: keydesk-mongo
+    ports:
+    - protocol: TCP
+      port: 27017
+  # 允许访问缓存
+  - to:
+    - podSelector:
+        matchLabels:
+          app: keydesk-redis
+    ports:
+    - protocol: TCP
+      port: 6379
+  # 允许DNS查询
+  - to: []
+    ports:
+    - protocol: TCP
+      port: 53
+    - protocol: UDP
+      port: 53
+```
+
+#### 外部访问策略
+```yaml
+# k8s/external-network-policy.yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: keydesk-external-policy
+  namespace: keydesk
+spec:
+  podSelector:
+    matchLabels:
+      app: keydesk
+      access: external
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  # 允许来自Ingress的访问
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: ingress-nginx
+    ports:
+    - protocol: TCP
+      port: 80
+    - protocol: TCP
+      port: 443
+  # 允许来自LoadBalancer的访问
+  - from:
+    - namespaceSelector: {}
+    ports:
+    - protocol: TCP
+      port: 80
+    - protocol: TCP
+      port: 443
+  egress:
+  # 允许访问内部服务
+  - to:
+    - podSelector:
+        matchLabels:
+          app: keydesk
+          access: internal
+    ports:
+    - protocol: TCP
+      port: 3000
+  # 允许访问数据库
+  - to:
+    - podSelector:
+        matchLabels:
+          app: keydesk-mongo
+    ports:
+    - protocol: TCP
+      port: 27017
+  # 允许访问缓存
+  - to:
+    - podSelector:
+        matchLabels:
+          app: keydesk-redis
+    ports:
+    - protocol: TCP
+      port: 6379
+```
+
+## 单机部署网络配置
+
+### Nginx配置
+
+#### 多域名配置
+```nginx
+# nginx/multi-domain.conf
+events {
+    worker_connections 1024;
+}
+
+http {
+    # 限流配置
+    limit_req_zone $binary_remote_addr zone=api_limit:10m rate=10r/s;
+    limit_req_zone $binary_remote_addr zone=auth_limit:10m rate=5r/s;
+    limit_req_zone $binary_remote_addr zone=admin_limit:10m rate=2r/s;
+
+    # 上游服务器配置
+    upstream api_gateway {
+        server api-gateway:80;
+    }
+
+    upstream auth_service {
+        server auth-service:3000;
+    }
+
+    upstream code_service {
+        server code-service:3000;
+    }
+
+    upstream template_service {
+        server template-service:3000;
+    }
+
+    upstream admin_service {
+        server admin-service:3000;
+    }
+
+    # 外部API服务器
+    server {
+        listen 80;
+        server_name api.keydesk.com;
+
+        # 健康检查
+        location /health {
+            access_log off;
+            return 200 "healthy\n";
+            add_header Content-Type text/plain;
+        }
+
+        # API路由
+        location /api/v1/auth/ {
+            limit_req zone=auth_limit burst=10 nodelay;
+            proxy_pass http://auth_service/;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+        }
+
+        location /api/v1/activation-codes/ {
+            limit_req zone=api_limit burst=20 nodelay;
+            proxy_pass http://code_service/;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+        }
+
+        location /api/v1/templates/ {
+            limit_req zone=api_limit burst=20 nodelay;
+            proxy_pass http://template_service/;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+        }
+
+        # 默认路由到API Gateway
+        location / {
+            limit_req zone=api_limit burst=20 nodelay;
+            proxy_pass http://api_gateway;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+        }
+    }
+
+    # 内部访问服务器
+    server {
+        listen 80;
+        server_name internal.keydesk.com;
+
+        # 只允许内部网络访问
+        allow 10.0.0.0/8;
+        allow 172.16.0.0/12;
+        allow 192.168.0.0/16;
+        deny all;
+
+        # 内部API路由
+        location /api/v1/ {
+            proxy_pass http://api_gateway;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+        }
+
+        # 监控端点
+        location /metrics {
+            proxy_pass http://api_gateway/metrics;
+            proxy_set_header Host $host;
+        }
+
+        # 调试端点
+        location /debug {
+            proxy_pass http://api_gateway/debug;
+            proxy_set_header Host $host;
+        }
+    }
+
+    # 管理后台服务器
+    server {
+        listen 80;
+        server_name admin.keydesk.com;
+
+        # 管理后台限流
+        location / {
+            limit_req zone=admin_limit burst=5 nodelay;
+            proxy_pass http://admin_service;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+        }
+    }
+}
+```
+
+#### 路径路由配置
+```nginx
+# nginx/path-based.conf
+events {
+    worker_connections 1024;
+}
+
+http {
+    upstream api_gateway {
+        server api-gateway:80;
+    }
+
+    upstream internal_api {
+        server internal-api:3000;
+    }
+
+    upstream admin_service {
+        server admin-service:3000;
+    }
+
+    server {
+        listen 80;
+        server_name keydesk.com;
+
+        # 外部API
+        location ~ ^/api/(.*)$ {
+            proxy_pass http://api_gateway/api/$1;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+        }
+
+        # 内部API (需要认证)
+        location ~ ^/internal/(.*)$ {
+            # 验证内部访问权限
+            auth_request /auth/internal;
+            
+            proxy_pass http://internal_api/$1;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+        }
+
+        # 内部认证
+        location = /auth/internal {
+            internal;
+            proxy_pass http://auth-service:3000/auth/validate-internal;
+            proxy_pass_request_body off;
+            proxy_set_header Content-Length "";
+            proxy_set_header X-Original-URI $request_uri;
+        }
+
+        # 管理后台
+        location ~ ^/admin/(.*)$ {
+            proxy_pass http://admin_service/$1;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+        }
+
+        # 监控
+        location ~ ^/monitor/(.*)$ {
+            # 只允许内部网络访问
+            allow 10.0.0.0/8;
+            allow 172.16.0.0/12;
+            allow 192.168.0.0/16;
+            deny all;
+            
+            proxy_pass http://monitor-service:3000/$1;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+        }
+    }
+}
+```
+
+## 访问控制配置
+
+### 认证中间件
+```typescript
+// src/middleware/access-control.ts
+interface AccessControlConfig {
+  // 内部访问白名单
+  internalNetworks: string[];
+  // 外部访问限制
+  externalRateLimit: number;
+  // 管理访问限制
+  adminRateLimit: number;
+}
+
+class AccessControlMiddleware {
+  private config: AccessControlConfig;
+
+  constructor(config: AccessControlConfig) {
+    this.config = config;
+  }
+
+  // 内部访问验证
+  validateInternalAccess(req: Request, res: Response, next: NextFunction) {
+    const clientIP = req.ip;
+    const isInternal = this.config.internalNetworks.some(network => 
+      this.isIPInNetwork(clientIP, network)
+    );
+
+    if (!isInternal) {
+      return res.status(403).json({
+        success: false,
+        error: {
+          code: 'ACCESS_DENIED',
+          message: '内部访问被拒绝'
+        }
+      });
+    }
+
+    next();
+  }
+
+  // 外部访问限流
+  externalRateLimit(req: Request, res: Response, next: NextFunction) {
+    const clientIP = req.ip;
+    const key = `rate_limit:external:${clientIP}`;
+    
+    // 实现限流逻辑
+    this.checkRateLimit(key, this.config.externalRateLimit, req, res, next);
+  }
+
+  // 管理访问限流
+  adminRateLimit(req: Request, res: Response, next: NextFunction) {
+    const clientIP = req.ip;
+    const key = `rate_limit:admin:${clientIP}`;
+    
+    // 实现限流逻辑
+    this.checkRateLimit(key, this.config.adminRateLimit, req, res, next);
+  }
+
+  private isIPInNetwork(ip: string, network: string): boolean {
+    // 实现IP网络检查逻辑
+    return true; // 简化实现
+  }
+
+  private checkRateLimit(key: string, limit: number, req: Request, res: Response, next: NextFunction) {
+    // 实现Redis限流逻辑
+    next();
+  }
+}
+```
+
+### 路由配置
+```typescript
+// src/routes/access-routes.ts
+import { Router } from 'express';
+import { AccessControlMiddleware } from '../middleware/access-control';
+
+const router = Router();
+const accessControl = new AccessControlMiddleware({
+  internalNetworks: ['10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16'],
+  externalRateLimit: 100,
+  adminRateLimit: 10
+});
+
+// 外部API路由
+router.use('/api/v1', accessControl.externalRateLimit, externalRoutes);
+
+// 内部API路由
+router.use('/internal', accessControl.validateInternalAccess, internalRoutes);
+
+// 管理API路由
+router.use('/admin', accessControl.adminRateLimit, adminRoutes);
+
+export default router;
+```
+
+## 监控和日志
+
+### 访问日志配置
+```typescript
+// src/utils/access-logger.ts
+interface AccessLogEntry {
+  timestamp: Date;
+  clientIP: string;
+  method: string;
+  path: string;
+  statusCode: number;
+  responseTime: number;
+  userAgent: string;
+  accessType: 'internal' | 'external' | 'admin';
+  userId?: string;
+}
+
+class AccessLogger {
+  logAccess(entry: AccessLogEntry) {
+    const logMessage = {
+      ...entry,
+      timestamp: entry.timestamp.toISOString(),
+      accessType: entry.accessType
+    };
+
+    // 记录到日志系统
+    console.log(JSON.stringify(logMessage));
+    
+    // 发送到监控系统
+    this.sendToMonitoring(entry);
+  }
+
+  private sendToMonitoring(entry: AccessLogEntry) {
+    // 发送到Prometheus或其他监控系统
+  }
+}
+```
+
+### 网络监控指标
+```typescript
+// src/metrics/network-metrics.ts
+interface NetworkMetrics {
+  // 访问类型统计
+  accessTypeCounter: {
+    internal: number;
+    external: number;
+    admin: number;
+  };
+  
+  // 响应时间统计
+  responseTimeHistogram: {
+    internal: number[];
+    external: number[];
+    admin: number[];
+  };
+  
+  // 错误率统计
+  errorRateCounter: {
+    internal: number;
+    external: number;
+    admin: number;
+  };
+}
+
+class NetworkMetricsCollector {
+  private metrics: NetworkMetrics;
+
+  constructor() {
+    this.metrics = {
+      accessTypeCounter: { internal: 0, external: 0, admin: 0 },
+      responseTimeHistogram: { internal: [], external: [], admin: [] },
+      errorRateCounter: { internal: 0, external: 0, admin: 0 }
+    };
+  }
+
+  recordAccess(accessType: 'internal' | 'external' | 'admin', responseTime: number, isError: boolean) {
+    this.metrics.accessTypeCounter[accessType]++;
+    this.metrics.responseTimeHistogram[accessType].push(responseTime);
+    
+    if (isError) {
+      this.metrics.errorRateCounter[accessType]++;
+    }
+  }
+
+  getMetrics(): NetworkMetrics {
+    return this.metrics;
+  }
+}
+```
+
+## 部署验证
+
+### 网络连通性测试
+```bash
+#!/bin/bash
+# scripts/test-network-access.sh
+
+echo "测试网络访问配置..."
+
+# 测试内部访问
+echo "1. 测试内部访问..."
+curl -H "Host: internal.keydesk.com" http://localhost/health
+curl -H "Host: internal.keydesk.com" http://localhost/api/v1/health
+
+# 测试外部访问
+echo "2. 测试外部访问..."
+curl -H "Host: api.keydesk.com" http://localhost/api/v1/activation-codes
+curl -H "Host: api.keydesk.com" http://localhost/api/v1/templates
+
+# 测试管理访问
+echo "3. 测试管理访问..."
+curl -H "Host: admin.keydesk.com" http://localhost/
+curl -H "Host: admin.keydesk.com" http://localhost/dashboard
+
+# 测试路径路由
+echo "4. 测试路径路由..."
+curl -H "Host: keydesk.com" http://localhost/api/v1/health
+curl -H "Host: keydesk.com" http://localhost/internal/metrics
+curl -H "Host: keydesk.com" http://localhost/admin/dashboard
+
+echo "网络访问测试完成！"
+```
+
+### 安全测试
+```bash
+#!/bin/bash
+# scripts/test-security.sh
+
+echo "测试安全配置..."
+
+# 测试未授权访问
+echo "1. 测试未授权访问..."
+curl -H "Host: internal.keydesk.com" http://localhost/internal/admin
+curl -H "Host: keydesk.com" http://localhost/internal/metrics
+
+# 测试限流
+echo "2. 测试限流..."
+for i in {1..20}; do
+  curl -H "Host: api.keydesk.com" http://localhost/api/v1/activation-codes &
+done
+wait
+
+# 测试SSL重定向
+echo "3. 测试SSL重定向..."
+curl -I http://api.keydesk.com/api/v1/health
+
+echo "安全测试完成！"
+```
+description:
+globs:
+alwaysApply: false
+---

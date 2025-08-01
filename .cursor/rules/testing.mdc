@@ -1,0 +1,928 @@
+# 测试规范
+
+## 概述
+KeyDesk项目采用全面的测试策略，确保代码质量、功能正确性和系统稳定性。
+
+## 测试金字塔
+
+### 测试层次结构
+```
+    ┌─────────────┐
+    │   E2E Tests │  ← 少量，覆盖关键用户流程
+    └─────────────┘
+    ┌─────────────┐
+    │Integration  │  ← 中等数量，测试服务间交互
+    │   Tests     │
+    └─────────────┘
+    ┌─────────────┐
+    │  Unit Tests │  ← 大量，测试独立功能单元
+    └─────────────┘
+```
+
+### 测试比例
+- 单元测试: 70%
+- 集成测试: 20%
+- E2E测试: 10%
+
+## 单元测试
+
+### 测试框架配置
+```typescript
+// jest.config.js
+module.exports = {
+  preset: 'ts-jest',
+  testEnvironment: 'node',
+  roots: ['<rootDir>/src'],
+  testMatch: ['**/__tests__/**/*.ts', '**/?(*.)+(spec|test).ts'],
+  collectCoverageFrom: [
+    'src/**/*.ts',
+    '!src/**/*.d.ts',
+    '!src/**/*.test.ts',
+    '!src/**/*.spec.ts'
+  ],
+  coverageThreshold: {
+    global: {
+      branches: 80,
+      functions: 80,
+      lines: 80,
+      statements: 80
+    }
+  },
+  setupFilesAfterEnv: ['<rootDir>/src/test/setup.ts']
+};
+```
+
+### 激活码生成器测试
+```typescript
+describe('ActivationCodeGenerator', () => {
+  let generator: ActivationCodeGenerator;
+  let mockTemplate: Template;
+  let mockRepository: jest.Mocked<ActivationCodeRepository>;
+
+  beforeEach(() => {
+    mockRepository = {
+      findByCode: jest.fn(),
+      save: jest.fn(),
+      findById: jest.fn(),
+      update: jest.fn(),
+      delete: jest.fn()
+    };
+    
+    generator = new ActivationCodeGenerator(mockRepository);
+    mockTemplate = createMockTemplate();
+  });
+
+  describe('generate', () => {
+    it('should generate unique activation code', async () => {
+      // Arrange
+      mockRepository.findByCode.mockResolvedValue(null);
+      mockRepository.save.mockImplementation(async (code) => ({ ...code, id: 'generated-id' }));
+
+      // Act
+      const result = await generator.generate(mockTemplate);
+
+      // Assert
+      expect(result.code).toMatch(/^[A-Z0-9]{8}$/);
+      expect(result.templateId).toBe(mockTemplate.id);
+      expect(result.status).toBe('active');
+      expect(mockRepository.save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          code: expect.any(String),
+          templateId: mockTemplate.id,
+          status: 'active'
+        })
+      );
+    });
+
+    it('should retry when duplicate code is generated', async () => {
+      // Arrange
+      mockRepository.findByCode
+        .mockResolvedValueOnce({ id: 'existing', code: 'ABC12345' } as ActivationCode)
+        .mockResolvedValueOnce(null);
+      mockRepository.save.mockImplementation(async (code) => ({ ...code, id: 'generated-id' }));
+
+      // Act
+      const result = await generator.generate(mockTemplate);
+
+      // Assert
+      expect(mockRepository.findByCode).toHaveBeenCalledTimes(2);
+      expect(result.code).not.toBe('ABC12345');
+    });
+
+    it('should throw error after max retries', async () => {
+      // Arrange
+      mockRepository.findByCode.mockResolvedValue({ id: 'existing', code: 'ABC12345' } as ActivationCode);
+
+      // Act & Assert
+      await expect(generator.generate(mockTemplate))
+        .rejects
+        .toThrow('无法生成唯一激活码，请重试');
+    });
+
+    it('should validate template before generation', async () => {
+      // Arrange
+      const invalidTemplate = { ...mockTemplate, codePattern: '' };
+
+      // Act & Assert
+      await expect(generator.generate(invalidTemplate))
+        .rejects
+        .toThrow('模板格式无效');
+    });
+  });
+
+  describe('generateBatch', () => {
+    it('should generate multiple unique codes', async () => {
+      // Arrange
+      mockRepository.findByCode.mockResolvedValue(null);
+      mockRepository.save.mockImplementation(async (code) => ({ ...code, id: `id-${Date.now()}` }));
+
+      // Act
+      const results = await generator.generateBatch(mockTemplate, 5);
+
+      // Assert
+      expect(results).toHaveLength(5);
+      expect(results.every(code => code.templateId === mockTemplate.id)).toBe(true);
+      expect(new Set(results.map(r => r.code)).size).toBe(5); // 所有代码都是唯一的
+    });
+  });
+});
+```
+
+### 激活码验证器测试
+```typescript
+describe('ActivationCodeValidator', () => {
+  let validator: ActivationCodeValidator;
+  let mockRepository: jest.Mocked<ActivationCodeRepository>;
+
+  beforeEach(() => {
+    mockRepository = {
+      findByCode: jest.fn(),
+      save: jest.fn(),
+      findById: jest.fn(),
+      update: jest.fn(),
+      delete: jest.fn()
+    };
+    
+    validator = new ActivationCodeValidator(mockRepository);
+  });
+
+  describe('validate', () => {
+    it('should return valid for active code', async () => {
+      // Arrange
+      const mockCode = createMockActivationCode({ status: 'active', usageCount: 0, maxUsage: 1 });
+      mockRepository.findByCode.mockResolvedValue(mockCode);
+
+      // Act
+      const result = await validator.validate('ABC12345');
+
+      // Assert
+      expect(result.isValid).toBe(true);
+      expect(result.code).toBe(mockCode);
+      expect(result.reason).toBeUndefined();
+    });
+
+    it('should return invalid for non-existent code', async () => {
+      // Arrange
+      mockRepository.findByCode.mockResolvedValue(null);
+
+      // Act
+      const result = await validator.validate('INVALID');
+
+      // Assert
+      expect(result.isValid).toBe(false);
+      expect(result.reason).toBe('激活码不存在');
+    });
+
+    it('should return invalid for expired code', async () => {
+      // Arrange
+      const expiredCode = createMockActivationCode({
+        status: 'active',
+        expiresAt: new Date(Date.now() - 1000) // 已过期
+      });
+      mockRepository.findByCode.mockResolvedValue(expiredCode);
+
+      // Act
+      const result = await validator.validate('ABC12345');
+
+      // Assert
+      expect(result.isValid).toBe(false);
+      expect(result.reason).toBe('激活码已过期');
+    });
+
+    it('should return invalid for exceeded usage limit', async () => {
+      // Arrange
+      const overusedCode = createMockActivationCode({
+        status: 'active',
+        usageCount: 2,
+        maxUsage: 1
+      });
+      mockRepository.findByCode.mockResolvedValue(overusedCode);
+
+      // Act
+      const result = await validator.validate('ABC12345');
+
+      // Assert
+      expect(result.isValid).toBe(false);
+      expect(result.reason).toBe('激活码使用次数已达上限');
+    });
+
+    it('should return invalid for revoked code', async () => {
+      // Arrange
+      const revokedCode = createMockActivationCode({ status: 'revoked' });
+      mockRepository.findByCode.mockResolvedValue(revokedCode);
+
+      // Act
+      const result = await validator.validate('ABC12345');
+
+      // Assert
+      expect(result.isValid).toBe(false);
+      expect(result.reason).toBe('激活码已被撤销');
+    });
+  });
+
+  describe('use', () => {
+    it('should increment usage count and update status', async () => {
+      // Arrange
+      const mockCode = createMockActivationCode({
+        status: 'active',
+        usageCount: 0,
+        maxUsage: 1
+      });
+      mockRepository.findByCode.mockResolvedValue(mockCode);
+      mockRepository.update.mockResolvedValue(mockCode);
+
+      // Act
+      const result = await validator.use('ABC12345', { userId: 'user-123' });
+
+      // Assert
+      expect(result.success).toBe(true);
+      expect(mockRepository.update).toHaveBeenCalledWith(
+        mockCode.id,
+        expect.objectContaining({
+          usageCount: 1,
+          status: 'used',
+          lastUsedAt: expect.any(Date)
+        })
+      );
+    });
+
+    it('should not update status if usage count not reached max', async () => {
+      // Arrange
+      const mockCode = createMockActivationCode({
+        status: 'active',
+        usageCount: 0,
+        maxUsage: 3
+      });
+      mockRepository.findByCode.mockResolvedValue(mockCode);
+      mockRepository.update.mockResolvedValue(mockCode);
+
+      // Act
+      const result = await validator.use('ABC12345', { userId: 'user-123' });
+
+      // Assert
+      expect(result.success).toBe(true);
+      expect(mockRepository.update).toHaveBeenCalledWith(
+        mockCode.id,
+        expect.objectContaining({
+          usageCount: 1,
+          status: 'active' // 状态保持active
+        })
+      );
+    });
+  });
+});
+```
+
+### 模板服务测试
+```typescript
+describe('TemplateService', () => {
+  let service: TemplateService;
+  let mockRepository: jest.Mocked<TemplateRepository>;
+
+  beforeEach(() => {
+    mockRepository = {
+      findById: jest.fn(),
+      save: jest.fn(),
+      update: jest.fn(),
+      delete: jest.fn(),
+      findAll: jest.fn()
+    };
+    
+    service = new TemplateService(mockRepository);
+  });
+
+  describe('createTemplate', () => {
+    it('should create valid template', async () => {
+      // Arrange
+      const templateData = {
+        name: 'Test Template',
+        description: 'Test Description',
+        codePattern: '[A-Z0-9]{8}',
+        customFields: [
+          { name: 'userId', type: 'string', required: true }
+        ]
+      };
+      mockRepository.save.mockImplementation(async (template) => ({ ...template, id: 'template-id' }));
+
+      // Act
+      const result = await service.createTemplate(templateData);
+
+      // Assert
+      expect(result.name).toBe(templateData.name);
+      expect(result.codePattern).toBe(templateData.codePattern);
+      expect(mockRepository.save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          name: templateData.name,
+          isActive: true
+        })
+      );
+    });
+
+    it('should validate template data', async () => {
+      // Arrange
+      const invalidData = {
+        name: '',
+        codePattern: 'invalid-pattern'
+      };
+
+      // Act & Assert
+      await expect(service.createTemplate(invalidData))
+        .rejects
+        .toThrow('模板名称不能为空');
+    });
+  });
+
+  describe('validateTemplate', () => {
+    it('should validate code pattern', () => {
+      // Valid patterns
+      expect(service.validateCodePattern('[A-Z0-9]{8}')).toBe(true);
+      expect(service.validateCodePattern('[A-Z]{4}-[0-9]{4}')).toBe(true);
+      
+      // Invalid patterns
+      expect(service.validateCodePattern('')).toBe(false);
+      expect(service.validateCodePattern('invalid')).toBe(false);
+    });
+  });
+});
+```
+
+## 集成测试
+
+### API集成测试
+```typescript
+describe('ActivationCode API Integration', () => {
+  let app: Express;
+  let db: Db;
+  let testUser: User;
+
+  beforeAll(async () => {
+    app = createTestApp();
+    db = await connectTestDatabase();
+    testUser = await createTestUser();
+  });
+
+  afterAll(async () => {
+    await db.close();
+  });
+
+  beforeEach(async () => {
+    await db.collection('activation_codes').deleteMany({});
+    await db.collection('templates').deleteMany({});
+  });
+
+  describe('POST /api/v1/activation-codes', () => {
+    it('should create activation code with valid template', async () => {
+      // Arrange
+      const template = await createTestTemplate(db);
+      const token = generateTestToken(testUser);
+
+      // Act
+      const response = await request(app)
+        .post('/api/v1/activation-codes')
+        .set('Authorization', `Bearer ${token}`)
+        .send({
+          templateId: template.id,
+          customFields: { userId: 'user-123' }
+        })
+        .expect(201);
+
+      // Assert
+      expect(response.body.success).toBe(true);
+      expect(response.body.data.code).toMatch(/^[A-Z0-9]{8}$/);
+      expect(response.body.data.templateId).toBe(template.id);
+      
+      // Verify database
+      const savedCode = await db.collection('activation_codes').findOne({ _id: new ObjectId(response.body.data.id) });
+      expect(savedCode).toBeDefined();
+      expect(savedCode.status).toBe('active');
+    });
+
+    it('should return 400 for invalid template', async () => {
+      // Arrange
+      const token = generateTestToken(testUser);
+
+      // Act
+      const response = await request(app)
+        .post('/api/v1/activation-codes')
+        .set('Authorization', `Bearer ${token}`)
+        .send({
+          templateId: 'invalid-template-id',
+          customFields: { userId: 'user-123' }
+        })
+        .expect(400);
+
+      // Assert
+      expect(response.body.success).toBe(false);
+      expect(response.body.error.code).toBe('TEMPLATE_NOT_FOUND');
+    });
+
+    it('should return 401 without authentication', async () => {
+      // Act
+      await request(app)
+        .post('/api/v1/activation-codes')
+        .send({
+          templateId: 'template-id',
+          customFields: { userId: 'user-123' }
+        })
+        .expect(401);
+    });
+  });
+
+  describe('POST /api/v1/activation-codes/validate', () => {
+    it('should validate existing activation code', async () => {
+      // Arrange
+      const template = await createTestTemplate(db);
+      const code = await createTestActivationCode(db, template.id);
+      const token = generateTestToken(testUser);
+
+      // Act
+      const response = await request(app)
+        .post('/api/v1/activation-codes/validate')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ code: code.code })
+        .expect(200);
+
+      // Assert
+      expect(response.body.success).toBe(true);
+      expect(response.body.data.isValid).toBe(true);
+    });
+
+    it('should return invalid for non-existent code', async () => {
+      // Arrange
+      const token = generateTestToken(testUser);
+
+      // Act
+      const response = await request(app)
+        .post('/api/v1/activation-codes/validate')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ code: 'INVALID123' })
+        .expect(200);
+
+      // Assert
+      expect(response.body.success).toBe(true);
+      expect(response.body.data.isValid).toBe(false);
+      expect(response.body.data.reason).toBe('激活码不存在');
+    });
+  });
+
+  describe('GET /api/v1/activation-codes', () => {
+    it('should return paginated activation codes', async () => {
+      // Arrange
+      const template = await createTestTemplate(db);
+      await createTestActivationCodes(db, template.id, 15);
+      const token = generateTestToken(testUser);
+
+      // Act
+      const response = await request(app)
+        .get('/api/v1/activation-codes?page=1&limit=10')
+        .set('Authorization', `Bearer ${token}`)
+        .expect(200);
+
+      // Assert
+      expect(response.body.success).toBe(true);
+      expect(response.body.data.items).toHaveLength(10);
+      expect(response.body.data.pagination.total).toBe(15);
+      expect(response.body.data.pagination.page).toBe(1);
+      expect(response.body.data.pagination.limit).toBe(10);
+    });
+
+    it('should filter by template', async () => {
+      // Arrange
+      const template1 = await createTestTemplate(db, { name: 'Template 1' });
+      const template2 = await createTestTemplate(db, { name: 'Template 2' });
+      await createTestActivationCode(db, template1.id);
+      await createTestActivationCode(db, template2.id);
+      const token = generateTestToken(testUser);
+
+      // Act
+      const response = await request(app)
+        .get(`/api/v1/activation-codes?templateId=${template1.id}`)
+        .set('Authorization', `Bearer ${token}`)
+        .expect(200);
+
+      // Assert
+      expect(response.body.data.items).toHaveLength(1);
+      expect(response.body.data.items[0].templateId).toBe(template1.id);
+    });
+  });
+});
+```
+
+### 数据库集成测试
+```typescript
+describe('Database Integration', () => {
+  let db: Db;
+  let repository: ActivationCodeRepository;
+
+  beforeAll(async () => {
+    db = await connectTestDatabase();
+    repository = new MongoActivationCodeRepository(db);
+  });
+
+  afterAll(async () => {
+    await db.close();
+  });
+
+  beforeEach(async () => {
+    await db.collection('activation_codes').deleteMany({});
+  });
+
+  describe('ActivationCodeRepository', () => {
+    it('should save and retrieve activation code', async () => {
+      // Arrange
+      const code = createMockActivationCode();
+
+      // Act
+      const savedCode = await repository.save(code);
+      const retrievedCode = await repository.findById(savedCode.id);
+
+      // Assert
+      expect(retrievedCode).toBeDefined();
+      expect(retrievedCode!.code).toBe(code.code);
+      expect(retrievedCode!.templateId).toBe(code.templateId);
+    });
+
+    it('should find codes by template', async () => {
+      // Arrange
+      const templateId = 'template-123';
+      const codes = [
+        createMockActivationCode({ templateId }),
+        createMockActivationCode({ templateId }),
+        createMockActivationCode({ templateId: 'other-template' })
+      ];
+      
+      for (const code of codes) {
+        await repository.save(code);
+      }
+
+      // Act
+      const foundCodes = await repository.findByTemplate(templateId);
+
+      // Assert
+      expect(foundCodes).toHaveLength(2);
+      expect(foundCodes.every(code => code.templateId === templateId)).toBe(true);
+    });
+
+    it('should update activation code', async () => {
+      // Arrange
+      const code = await repository.save(createMockActivationCode());
+      const updateData = { status: 'used', usageCount: 1 };
+
+      // Act
+      const updatedCode = await repository.update(code.id, updateData);
+
+      // Assert
+      expect(updatedCode.status).toBe('used');
+      expect(updatedCode.usageCount).toBe(1);
+    });
+  });
+});
+```
+
+## E2E测试
+
+### 用户流程测试
+```typescript
+describe('KeyDesk E2E Tests', () => {
+  let browser: Browser;
+  let page: Page;
+
+  beforeAll(async () => {
+    browser = await puppeteer.launch({
+      headless: true,
+      args: ['--no-sandbox', '--disable-setuid-sandbox']
+    });
+  });
+
+  afterAll(async () => {
+    await browser.close();
+  });
+
+  beforeEach(async () => {
+    page = await browser.newPage();
+    await page.goto('http://localhost:3000');
+  });
+
+  afterEach(async () => {
+    await page.close();
+  });
+
+  describe('Activation Code Management Flow', () => {
+    it('should complete full activation code lifecycle', async () => {
+      // 1. 登录
+      await page.click('[data-testid="login-button"]');
+      await page.type('[data-testid="username-input"]', 'admin');
+      await page.type('[data-testid="password-input"]', 'password');
+      await page.click('[data-testid="submit-button"]');
+      await page.waitForSelector('[data-testid="dashboard"]');
+
+      // 2. 创建模板
+      await page.click('[data-testid="create-template-button"]');
+      await page.type('[data-testid="template-name-input"]', 'Test Template');
+      await page.type('[data-testid="template-pattern-input"]', '[A-Z0-9]{8}');
+      await page.click('[data-testid="save-template-button"]');
+      await page.waitForSelector('[data-testid="template-created"]');
+
+      // 3. 生成激活码
+      await page.click('[data-testid="generate-code-button"]');
+      await page.select('[data-testid="template-select"]', 'Test Template');
+      await page.type('[data-testid="quantity-input"]', '5');
+      await page.click('[data-testid="generate-button"]');
+      await page.waitForSelector('[data-testid="codes-generated"]');
+
+      // 4. 验证激活码
+      const generatedCodes = await page.$$eval('[data-testid="generated-code"]', elements => 
+        elements.map(el => el.textContent)
+      );
+      
+      for (const code of generatedCodes) {
+        await page.click('[data-testid="validate-code-button"]');
+        await page.type('[data-testid="code-input"]', code);
+        await page.click('[data-testid="validate-button"]');
+        await page.waitForSelector('[data-testid="validation-success"]');
+      }
+
+      // 5. 查看统计
+      await page.click('[data-testid="statistics-tab"]');
+      const totalCodes = await page.$eval('[data-testid="total-codes"]', el => el.textContent);
+      expect(totalCodes).toBe('5');
+    });
+  });
+
+  describe('Template Management Flow', () => {
+    it('should manage templates with custom fields', async () => {
+      // 登录
+      await loginAsAdmin(page);
+
+      // 创建带自定义字段的模板
+      await page.click('[data-testid="create-template-button"]');
+      await page.type('[data-testid="template-name-input"]', 'Custom Template');
+      await page.type('[data-testid="template-pattern-input"]', '[A-Z]{4}-[0-9]{4}');
+      
+      // 添加自定义字段
+      await page.click('[data-testid="add-custom-field-button"]');
+      await page.type('[data-testid="field-name-input"]', 'userId');
+      await page.select('[data-testid="field-type-select"]', 'string');
+      await page.click('[data-testid="field-required-checkbox"]');
+      
+      await page.click('[data-testid="save-template-button"]');
+      await page.waitForSelector('[data-testid="template-created"]');
+
+      // 使用模板生成激活码
+      await page.click('[data-testid="generate-code-button"]');
+      await page.select('[data-testid="template-select"]', 'Custom Template');
+      await page.type('[data-testid="custom-field-userId"]', 'user-123');
+      await page.click('[data-testid="generate-button"]');
+      
+      await page.waitForSelector('[data-testid="codes-generated"]');
+      
+      // 验证自定义字段
+      const customFieldValue = await page.$eval('[data-testid="custom-field-value"]', el => el.textContent);
+      expect(customFieldValue).toBe('user-123');
+    });
+  });
+});
+```
+
+## 性能测试
+
+### 负载测试
+```typescript
+describe('Performance Tests', () => {
+  let app: Express;
+
+  beforeAll(async () => {
+    app = createTestApp();
+  });
+
+  describe('Activation Code Generation', () => {
+    it('should handle concurrent code generation', async () => {
+      // Arrange
+      const template = await createTestTemplate();
+      const concurrentRequests = 100;
+      const promises = [];
+
+      // Act
+      for (let i = 0; i < concurrentRequests; i++) {
+        promises.push(
+          request(app)
+            .post('/api/v1/activation-codes')
+            .set('Authorization', `Bearer ${generateTestToken()}`)
+            .send({ templateId: template.id })
+        );
+      }
+
+      const startTime = Date.now();
+      const responses = await Promise.all(promises);
+      const endTime = Date.now();
+
+      // Assert
+      expect(responses.every(r => r.status === 201)).toBe(true);
+      expect(endTime - startTime).toBeLessThan(5000); // 5秒内完成
+      
+      // 验证所有生成的代码都是唯一的
+      const codes = responses.map(r => r.body.data.code);
+      expect(new Set(codes).size).toBe(concurrentRequests);
+    });
+
+    it('should handle bulk code generation efficiently', async () => {
+      // Arrange
+      const template = await createTestTemplate();
+      const batchSize = 1000;
+
+      // Act
+      const startTime = Date.now();
+      const response = await request(app)
+        .post('/api/v1/activation-codes/batch')
+        .set('Authorization', `Bearer ${generateTestToken()}`)
+        .send({
+          templateId: template.id,
+          quantity: batchSize
+        });
+      const endTime = Date.now();
+
+      // Assert
+      expect(response.status).toBe(201);
+      expect(response.body.data.codes).toHaveLength(batchSize);
+      expect(endTime - startTime).toBeLessThan(10000); // 10秒内完成
+    });
+  });
+
+  describe('Code Validation', () => {
+    it('should handle high-frequency validation requests', async () => {
+      // Arrange
+      const template = await createTestTemplate();
+      const codes = await createTestActivationCodes(100);
+      const validationRequests = 1000;
+      const promises = [];
+
+      // Act
+      for (let i = 0; i < validationRequests; i++) {
+        const randomCode = codes[Math.floor(Math.random() * codes.length)];
+        promises.push(
+          request(app)
+            .post('/api/v1/activation-codes/validate')
+            .set('Authorization', `Bearer ${generateTestToken()}`)
+            .send({ code: randomCode.code })
+        );
+      }
+
+      const startTime = Date.now();
+      const responses = await Promise.all(promises);
+      const endTime = Date.now();
+
+      // Assert
+      expect(responses.every(r => r.status === 200)).toBe(true);
+      expect(endTime - startTime).toBeLessThan(3000); // 3秒内完成
+    });
+  });
+});
+```
+
+## 测试工具和辅助函数
+
+### 测试数据生成器
+```typescript
+// test/factories/activation-code.factory.ts
+export class ActivationCodeFactory {
+  static create(overrides: Partial<ActivationCode> = {}): ActivationCode {
+    return {
+      id: generateId(),
+      code: generateRandomCode(),
+      templateId: generateId(),
+      customFields: {},
+      status: 'active',
+      usageCount: 0,
+      maxUsage: 1,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      ...overrides
+    };
+  }
+
+  static createBatch(count: number, overrides: Partial<ActivationCode> = {}): ActivationCode[] {
+    return Array.from({ length: count }, () => this.create(overrides));
+  }
+}
+
+// test/factories/template.factory.ts
+export class TemplateFactory {
+  static create(overrides: Partial<Template> = {}): Template {
+    return {
+      id: generateId(),
+      name: `Template ${generateId()}`,
+      description: 'Test template',
+      codePattern: '[A-Z0-9]{8}',
+      customFields: [],
+      validationRules: [],
+      isActive: true,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      ...overrides
+    };
+  }
+}
+```
+
+### 测试辅助函数
+```typescript
+// test/helpers/database.helper.ts
+export async function createTestDatabase(): Promise<Db> {
+  const client = new MongoClient(process.env.TEST_MONGODB_URI || 'mongodb://localhost:27017/keydesk-test');
+  await client.connect();
+  return client.db();
+}
+
+export async function clearTestDatabase(db: Db): Promise<void> {
+  const collections = await db.listCollections().toArray();
+  for (const collection of collections) {
+    await db.collection(collection.name).deleteMany({});
+  }
+}
+
+// test/helpers/auth.helper.ts
+export function generateTestToken(user: User = createTestUser()): string {
+  return jwt.sign(
+    { userId: user.id, username: user.username, roles: user.roles },
+    process.env.JWT_SECRET || 'test-secret',
+    { expiresIn: '1h' }
+  );
+}
+
+// test/helpers/api.helper.ts
+export async function createTestApp(): Promise<Express> {
+  const app = express();
+  app.use(express.json());
+  app.use('/api/v1', apiRoutes);
+  return app;
+}
+```
+
+## 测试覆盖率报告
+
+### 覆盖率配置
+```typescript
+// jest.config.js 中的覆盖率配置
+coverageReporters: ['text', 'lcov', 'html'],
+coverageDirectory: 'coverage',
+collectCoverageFrom: [
+  'src/**/*.ts',
+  '!src/**/*.d.ts',
+  '!src/**/*.test.ts',
+  '!src/**/*.spec.ts',
+  '!src/test/**/*',
+  '!src/migrations/**/*'
+],
+coverageThreshold: {
+  global: {
+    branches: 80,
+    functions: 80,
+    lines: 80,
+    statements: 80
+  },
+  './src/core/': {
+    branches: 90,
+    functions: 90,
+    lines: 90,
+    statements: 90
+  }
+}
+```
+
+### 覆盖率报告示例
+```
+----------|---------|----------|---------|---------|-------------------
+File      | % Stmts | % Branch | % Funcs | % Lines | Uncovered Line #s
+----------|---------|----------|---------|---------|-------------------
+All files |   85.23 |    82.15 |   87.65 |   85.23 |
+ core/    |   92.15 |    89.23 |   94.12 |   92.15 |
+  generator.ts |   95.45 |    92.31 |   96.15 |   95.45 |
+  validator.ts |   89.23 |    86.54 |   92.31 |   89.23 | 45,67,89
+ api/     |   78.45 |    75.23 |   81.54 |   78.45 |
+  controller.ts |   76.92 |    73.85 |   79.23 |   76.92 | 23,45,67
+----------|---------|----------|---------|---------|-------------------
+```
+description:
+globs:
+alwaysApply: false
+---
