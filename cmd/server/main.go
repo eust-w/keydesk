@@ -125,7 +125,12 @@ func setupRouter(config *Config, db *gorm.DB, logger *logrus.Logger) *gin.Engine
 			keys.GET("", authMiddleware, activationHandler.ListKeys)
 			keys.GET("/:code", activationHandler.GetKeyInfo)
 			keys.DELETE("/:code", authMiddleware, adminMiddleware, activationHandler.RevokeKey)
-			keys.GET("/:key_id/activations", authMiddleware, activationHandler.GetActivations)
+		}
+
+		// 激活记录路由
+		activations := api.Group("/activations")
+		{
+			activations.GET("/key/:key_id", authMiddleware, activationHandler.GetActivations)
 		}
 
 		// 激活相关路由
