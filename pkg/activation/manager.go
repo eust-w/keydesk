@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/keydesk/activation/internal/models"
+	"github.com/eust-w/keydesk/internal/models"
 	"gorm.io/gorm"
 )
 
@@ -42,6 +42,12 @@ type ActivateRequest struct {
 
 // GenerateKey 生成激活码
 func (m *Manager) GenerateKey(req *GenerateKeyRequest) (*models.ActivationKey, error) {
+	if req == nil {
+		return nil, fmt.Errorf("request is required")
+	}
+	if req.MaxUses < 0 {
+		return nil, fmt.Errorf("max_uses must be positive")
+	}
 	// 设置默认值
 	if req.KeyLength == 0 {
 		req.KeyLength = 16
@@ -117,77 +123,39 @@ func (m *Manager) ValidateKey(code string) (bool, error) {
 
 // ActivateKey 激活激活码
 func (m *Manager) ActivateKey(req *ActivateRequest) (*models.Activation, error) {
-	// 开始事务
-	tx := m.db.Begin()
-	defer func() {
-		if r := recover(); r != nil {
-			tx.Rollback()
-		}
-	}()
-
-	// 查找激活码
-	var key models.ActivationKey
-	err := tx.Where("code = ?", req.Code).First(&key).Error
-	if err != nil {
-		tx.Rollback()
-		if err == gorm.ErrRecordNotFound {
-			return nil, fmt.Errorf("activation key not found")
-		}
-		return nil, fmt.Errorf("failed to query activation key: %w", err)
+	if req == nil {
+		return nil, fmt.Errorf("request is required")
 	}
-
-	// 验证激活码
-	valid, err := m.ValidateKey(req.Code)
+	var activation *models.Activation
+	err := m.db.Transaction(func(tx *gorm.DB) error {
+		// The conditional write serializes capacity reservation on this key.
+		now := time.Now()
+		result := tx.Model(&models.ActivationKey{}).
+			Where("code = ? AND status = ? AND used_count < max_uses AND (expires_at IS NULL OR expires_at > ?)", req.Code, "unused", now).
+			Updates(map[string]interface{}{"used_count": gorm.Expr("used_count + 1"), "status": gorm.Expr("CASE WHEN used_count + 1 >= max_uses THEN 'used' ELSE 'unused' END")})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != 1 {
+			return fmt.Errorf("invalid or exhausted activation key")
+		}
+		var key models.ActivationKey
+		if err := tx.Where("code = ?", req.Code).First(&key).Error; err != nil {
+			return err
+		}
+		var count int64
+		if err := tx.Model(&models.Activation{}).Where("key_id = ? AND user_email = ?", key.ID, req.UserEmail).Count(&count).Error; err != nil {
+			return err
+		}
+		if count > 0 {
+			return fmt.Errorf("activation key already used by this email")
+		}
+		activation = &models.Activation{KeyID: key.ID, UserEmail: req.UserEmail, UserID: req.UserID, DeviceID: req.DeviceID, IPAddress: req.IPAddress, UserAgent: req.UserAgent, ActivatedAt: now, ExpiresAt: key.ExpiresAt, Status: "active"}
+		return tx.Create(activation).Error
+	})
 	if err != nil {
-		tx.Rollback()
 		return nil, err
 	}
-	if !valid {
-		tx.Rollback()
-		return nil, fmt.Errorf("invalid activation key")
-	}
-
-	// 检查是否已经激活过
-	var existingActivation models.Activation
-	err = tx.Where("key_id = ? AND user_email = ?", key.ID, req.UserEmail).First(&existingActivation).Error
-	if err == nil {
-		tx.Rollback()
-		return nil, fmt.Errorf("activation key already used by this email")
-	}
-
-	// 创建激活记录
-	activation := &models.Activation{
-		KeyID:       key.ID,
-		UserEmail:   req.UserEmail,
-		UserID:      req.UserID,
-		DeviceID:    req.DeviceID,
-		IPAddress:   req.IPAddress,
-		UserAgent:   req.UserAgent,
-		ActivatedAt: time.Now(),
-		ExpiresAt:   key.ExpiresAt,
-		Status:      "active",
-	}
-
-	if err := tx.Create(activation).Error; err != nil {
-		tx.Rollback()
-		return nil, fmt.Errorf("failed to create activation record: %w", err)
-	}
-
-	// 更新激活码使用次数
-	key.UsedCount++
-	if key.UsedCount >= key.MaxUses {
-		key.Status = "used"
-	}
-	if err := tx.Save(&key).Error; err != nil {
-		tx.Rollback()
-		return nil, fmt.Errorf("failed to update activation key: %w", err)
-	}
-
-	// 提交事务
-	if err := tx.Commit().Error; err != nil {
-		return nil, fmt.Errorf("failed to commit transaction: %w", err)
-	}
-
 	return activation, nil
 }
 
@@ -215,10 +183,14 @@ func (m *Manager) RevokeKey(code string) error {
 
 // generateUniqueCode 生成唯一激活码
 func (m *Manager) generateUniqueCode(prefix string, length int) (string, error) {
+	if length <= len(prefix) || length > 256 {
+		return "", fmt.Errorf("key length must exceed prefix length and be at most 256")
+	}
+	randomLength := length - len(prefix)
 	maxAttempts := 100
 	for i := 0; i < maxAttempts; i++ {
 		// 生成随机字节
-		bytes := make([]byte, length/2)
+		bytes := make([]byte, (randomLength+1)/2)
 		if _, err := rand.Read(bytes); err != nil {
 			return "", err
 		}

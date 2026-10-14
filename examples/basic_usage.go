@@ -5,8 +5,8 @@ import (
 	"log"
 	"time"
 
-	"github.com/keydesk/activation/pkg/activation"
-	"github.com/keydesk/activation/pkg/database"
+	"github.com/eust-w/keydesk/pkg/activation"
+	"github.com/eust-w/keydesk/pkg/database"
 )
 
 func main() {

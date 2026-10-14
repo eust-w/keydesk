@@ -4,9 +4,9 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/eust-w/keydesk/internal/models"
+	"github.com/eust-w/keydesk/pkg/activation"
 	"github.com/gin-gonic/gin"
-	"github.com/keydesk/activation/internal/models"
-	"github.com/keydesk/activation/pkg/activation"
 	"github.com/sirupsen/logrus"
 	"gorm.io/gorm"
 )
@@ -38,6 +38,18 @@ func (h *ActivationHandler) GenerateKey(c *gin.Context) {
 		return
 	}
 
+	length := req.KeyLength
+	if length == 0 {
+		length = 16
+	}
+	prefix := req.KeyPrefix
+	if prefix == "" {
+		prefix = "KD"
+	}
+	if length <= len(prefix) || length > 256 || req.MaxUses < 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid key length, prefix or capacity"})
+		return
+	}
 	// 从JWT中获取用户信息
 	userID, exists := c.Get("user_id")
 	if exists {

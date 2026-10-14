@@ -1,4 +1,4 @@
-module github.com/keydesk/activation
+module github.com/eust-w/keydesk
 
 go 1.23
 

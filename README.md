@@ -1,126 +1,81 @@
-# KeyDesk - 激活码管理系统
+<div align="center">
+  <img src="docs/readme/hero.svg" width="100%" alt="KeyDesk workflow overview">
+  <h1>KeyDesk</h1>
+  <p><strong>让激活码名额、有效期与访问权限都有明确约束。</strong></p>
+  <p><a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-d99536?style=flat-square"></a> <a href="docs/readme/validation.md"><img alt="Validation notes" src="https://img.shields.io/badge/Validation-repository%20checks-547ac4?style=flat-square"></a></p>
+  <p><a href="#overview">项目亮点</a> · <a href="#quick-start">快速开始</a> · <a href="#workflow">工作流</a> · <a href="#validation">验证</a> · <a href="#documentation">文档</a></p>
+  <p><a href="README.en.md">English</a> · <a href="README.md">简体中文</a></p>
+</div>
 
-一个功能完整的Go语言激活码管理包，提供激活码生成、验证、管理和API接口。
+---
 
-## 功能特性
+<a id="overview"></a>
+## 项目亮点
 
-- 🔑 激活码生成和管理
-- ✅ 激活码验证和激活
-- 📊 用户激活记录追踪
-- 🗄️ 数据库支持 (PostgreSQL)
-- 🌐 RESTful API接口
-- 🎨 现代化Web界面
-- 🔒 JWT身份验证
-- 📝 详细日志记录
+Go/PostgreSQL 激活码服务与可复用库，提供账号认证、激活码生成和事务内激活记录。
 
+| 能力 | 内容 |
+| :--- | :--- |
+| **激活码生命周期** | 类型、到期、名额、校验与撤销。 |
+| **认证 API** | 必须有到期时间的 HS256 token 与管理员生成权限。 |
+| **原子激活** | 名额占用与激活记录在同一事务内完成。 |
+
+<a id="quick-start"></a>
 ## 快速开始
 
-### 安装依赖
-
 ```bash
-go mod tidy
-```
-
-### 配置数据库
-
-1. 确保PostgreSQL已安装并运行
-2. 创建数据库：
-```sql
-CREATE DATABASE keydesk;
-```
-
-### 环境配置
-
-复制并修改配置文件：
-```bash
+git clone https://github.com/eust-w/keydesk.git
+cd keydesk
+# Go 1.24+ and PostgreSQL are required.
+go mod download
 cp config/config.example.yaml config/config.yaml
+# Set your database connection and a random JWT secret in config/config.yaml.
+go run ./cmd/server
 ```
 
-### 运行服务
+管理员账号需由数据库管理员明确授予角色；公开注册仅创建普通用户。创建 PostgreSQL 数据库后，将连接信息和随机 secret 写入配置。示例角色提升：
+
+```sql
+UPDATE users SET role = 'admin' WHERE email = 'YOUR_ADMIN_EMAIL';
+```
+
+<a id="workflow"></a>
+## 工作流
+
+```text
+ISSUE → AUTHORIZE → ACTIVATE
+```
 
 ```bash
-go run cmd/server/main.go
+go test -race ./...
+go build ./cmd/server
+# PostgreSQL acceptance in a disposable database:
+KEYDESK_TEST_POSTGRES_DSN='host=127.0.0.1 user=YOUR_USER dbname=YOUR_TEST_DB sslmode=disable' go test -race ./...
 ```
 
-## API接口
+<a id="validation"></a>
+## 验证
 
-### 激活码管理
-
-- `POST /api/v1/keys/generate` - 生成激活码
-- `GET /api/v1/keys` - 获取激活码列表
-- `DELETE /api/v1/keys/:id` - 删除激活码
-
-### 激活验证
-
-- `POST /api/v1/activate` - 验证并激活
-- `GET /api/v1/activation/:key` - 查询激活状态
-
-### 用户管理
-
-- `POST /api/v1/users/register` - 用户注册
-- `POST /api/v1/users/login` - 用户登录
-
-## 使用示例
-
-### 作为Go包使用
-
-```go
-package main
-
-import (
-    "github.com/keydesk/activation/pkg/activation"
-    "github.com/keydesk/activation/pkg/database"
-)
-
-func main() {
-    // 初始化数据库连接
-    db, err := database.NewConnection("postgres://user:pass@localhost/keydesk")
-    if err != nil {
-        panic(err)
-    }
-
-    // 创建激活码管理器
-    manager := activation.NewManager(db)
-
-    // 生成激活码
-    key, err := manager.GenerateKey("premium", 30) // 30天有效期
-    if err != nil {
-        panic(err)
-    }
-
-    // 验证激活码
-    valid, err := manager.ValidateKey(key.Code)
-    if err != nil {
-        panic(err)
-    }
-
-    if valid {
-        // 激活码有效，执行激活逻辑
-        err = manager.ActivateKey(key.Code, "user@example.com")
-    }
-}
+```bash
+go test -race ./...
+go build ./cmd/server
 ```
 
-## 项目结构
+运行环境与已执行结果见 [validation notes](docs/readme/validation.md).
 
-```
-keydesk/
-├── cmd/                    # 命令行工具
-│   └── server/            # 主服务器
-├── config/                # 配置文件
-├── internal/              # 内部包
-│   ├── models/           # 数据模型
-│   ├── handlers/         # HTTP处理器
-│   └── middleware/       # 中间件
-├── pkg/                   # 公共包
-│   ├── activation/       # 激活码核心逻辑
-│   ├── database/         # 数据库操作
-│   └── utils/            # 工具函数
-├── web/                   # 前端文件
-├── migrations/            # 数据库迁移
-└── docs/                  # 文档
-```
+| 项目 | 当前边界 |
+| :--- | :--- |
+| 升级行为 | 无 exp 的旧 token 会失效，需要重新登录。jwt.expires_in 使用正的 Go duration，默认 24h。 |
+| API | 注册默认普通用户；生成激活码需要管理员角色。 |
+| 公共库 | 使用已编译示例中的 request struct 接口，旧位置参数示例已过时。 |
 
-## 许可证
+<a id="documentation"></a>
+## 文档
 
-MIT License
+- [Compiled package example / 公共库示例](examples/basic_usage.go)
+- [Activation logic / 激活逻辑](pkg/activation/manager.go)
+- [Routes / 路由](cmd/server/main.go)
+
+## 许可证与来源
+
+原创代码和新增演示资源采用 [MIT](LICENSE). 第三方代码、模型、数据和外部资源保留各自许可，详见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/keydesk/activation/internal/models"
+	"github.com/eust-w/keydesk/internal/models"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"

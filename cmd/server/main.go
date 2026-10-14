@@ -7,11 +7,11 @@ import (
 	"os"
 	"time"
 
+	"github.com/eust-w/keydesk/internal/handlers"
+	"github.com/eust-w/keydesk/internal/middleware"
+	"github.com/eust-w/keydesk/pkg/activation"
+	"github.com/eust-w/keydesk/pkg/database"
 	"github.com/gin-gonic/gin"
-	"github.com/keydesk/activation/internal/handlers"
-	"github.com/keydesk/activation/internal/middleware"
-	"github.com/keydesk/activation/pkg/activation"
-	"github.com/keydesk/activation/pkg/database"
 	"github.com/sirupsen/logrus"
 	"gopkg.in/yaml.v3"
 	"gorm.io/gorm"
@@ -58,6 +58,13 @@ func loadConfig(configPath string) (*Config, error) {
 		return nil, fmt.Errorf("failed to parse config file: %w", err)
 	}
 
+	if config.JWT.ExpiresIn == "" {
+		config.JWT.ExpiresIn = "24h"
+	}
+	ttl, err := time.ParseDuration(config.JWT.ExpiresIn)
+	if err != nil || ttl <= 0 {
+		return nil, fmt.Errorf("jwt.expires_in must be a positive duration")
+	}
 	return &config, nil
 }
 
@@ -100,7 +107,11 @@ func setupRouter(config *Config, db *gorm.DB, logger *logrus.Logger) *gin.Engine
 
 	// 创建处理器
 	activationHandler := handlers.NewActivationHandler(manager, db, logger)
-	userHandler := handlers.NewUserHandler(db, logger, config.JWT.Secret)
+	ttl, _ := time.ParseDuration(config.JWT.ExpiresIn)
+	if ttl <= 0 {
+		ttl = 24 * time.Hour
+	}
+	userHandler := handlers.NewUserHandler(db, logger, config.JWT.Secret, ttl)
 
 	// JWT中间件
 	jwtConfig := &middleware.JWTConfig{Secret: config.JWT.Secret}

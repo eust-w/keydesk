@@ -1,8 +1,10 @@
 package middleware
 
 import (
+	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
@@ -49,7 +51,7 @@ func AuthMiddleware(config *JWTConfig, logger *logrus.Logger) gin.HandlerFunc {
 		// 解析JWT
 		token, err := jwt.ParseWithClaims(tokenString, &Claims{}, func(token *jwt.Token) (interface{}, error) {
 			return []byte(config.Secret), nil
-		})
+		}, jwt.WithValidMethods([]string{"HS256"}))
 
 		if err != nil {
 			logger.WithError(err).Error("Failed to parse JWT token")
@@ -70,7 +72,7 @@ func AuthMiddleware(config *JWTConfig, logger *logrus.Logger) gin.HandlerFunc {
 
 		// 提取声明
 		claims, ok := token.Claims.(*Claims)
-		if !ok {
+		if !ok || claims.ExpiresAt == nil {
 			c.JSON(http.StatusUnauthorized, gin.H{
 				"error": "Invalid token claims",
 			})
@@ -112,11 +114,20 @@ func AdminMiddleware() gin.HandlerFunc {
 }
 
 // GenerateToken 生成JWT token
-func GenerateToken(userID, email, role, secret string) (string, error) {
+func GenerateToken(userID, email, role, secret string, durations ...time.Duration) (string, error) {
+	ttl := 24 * time.Hour
+	if len(durations) > 0 {
+		ttl = durations[0]
+	}
+	if ttl <= 0 {
+		return "", fmt.Errorf("token duration must be positive")
+	}
+	now := time.Now()
 	claims := &Claims{
-		UserID: userID,
-		Email:  email,
-		Role:   role,
+		UserID:           userID,
+		Email:            email,
+		Role:             role,
+		RegisteredClaims: jwt.RegisteredClaims{IssuedAt: jwt.NewNumericDate(now), ExpiresAt: jwt.NewNumericDate(now.Add(ttl))},
 	}
 
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)

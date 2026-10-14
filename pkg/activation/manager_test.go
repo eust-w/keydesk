@@ -3,7 +3,7 @@ package activation
 import (
 	"testing"
 
-	"github.com/keydesk/activation/internal/models"
+	"github.com/eust-w/keydesk/internal/models"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )

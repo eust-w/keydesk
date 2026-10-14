@@ -3,10 +3,11 @@ package handlers
 import (
 	"fmt"
 	"net/http"
+	"time"
 
+	"github.com/eust-w/keydesk/internal/middleware"
+	"github.com/eust-w/keydesk/internal/models"
 	"github.com/gin-gonic/gin"
-	"github.com/keydesk/activation/internal/middleware"
-	"github.com/keydesk/activation/internal/models"
 	"github.com/sirupsen/logrus"
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
@@ -17,14 +18,20 @@ type UserHandler struct {
 	db        *gorm.DB
 	logger    *logrus.Logger
 	jwtSecret string
+	jwtTTL    time.Duration
 }
 
 // NewUserHandler 创建用户处理器
-func NewUserHandler(db *gorm.DB, logger *logrus.Logger, jwtSecret string) *UserHandler {
+func NewUserHandler(db *gorm.DB, logger *logrus.Logger, jwtSecret string, durations ...time.Duration) *UserHandler {
+	ttl := 24 * time.Hour
+	if len(durations) > 0 {
+		ttl = durations[0]
+	}
 	return &UserHandler{
 		db:        db,
 		logger:    logger,
 		jwtSecret: jwtSecret,
+		jwtTTL:    ttl,
 	}
 }
 
@@ -142,6 +149,7 @@ func (h *UserHandler) Login(c *gin.Context) {
 		user.Email,
 		user.Role,
 		h.jwtSecret,
+		h.jwtTTL,
 	)
 	if err != nil {
 		h.logger.WithError(err).Error("Failed to generate token")
